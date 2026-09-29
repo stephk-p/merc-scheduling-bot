@@ -1,173 +1,155 @@
-# merc-scheduling-bot
+# Merc Scheduling Bot
 
-A Discord bot for posting runs and letting people sign up for roles.
+A Discord bot for posting merc runs and letting people sign up for a role.
 
-Using the bot means you agree to the [Terms of Service](TERMS_OF_SERVICE.md) and
+## Add the bot to your server!
+
+[Click here to add Merc Scheduling Bot to your server](https://discord.com/oauth2/authorize?client_id=1554373434744504330&permissions=76816&integration_type=0&scope=bot+applications.commands)
+
+Pick your server and click Authorize. You need the Manage Server permission to add bots.
+The commands may take a minute to show up after the bot joins.
+
+By using the bot you agree to the [Terms of Service](TERMS_OF_SERVICE.md) and
 [Privacy Policy](PRIVACY_POLICY.md).
+
+## Creating a run
+
+```
+/createrun amount text time clearee role
+```
+
+For example, `/createrun amount:5m text:M4S clear time:sept 28 @ 4 PM clearee:@Steph role:M1` posts:
+
+```
+5m M4S clear Sunday, September 28, 2026 4:00 PM for @Steph M1
+
+MT -
+OT -
+H1 -
+H2 -
+M1 - @Steph
+M2 -
+R1 -
+R2 -
+```
+
+- **time** can be written however you'd normally say it: `sept 28 @ 4 PM`, `tomorrow 8pm`, `friday at 7pm`.
+  Everyone sees it in their own timezone.
+- **role** is the clearee's role. They're added to that slot automatically.
+- The first time you use `/createrun`, fill in the optional **timezone** option (for example
+  `America/New_York` or `EST`) so the bot knows what "4 PM" means for you. It remembers it after that.
+  You can change it any time with `/settimezone`.
+
+## Signing up
+
+Click **✅ Sign up** under a run, choose from the menu and press **Confirm**. Click **❌ Leave** to drop out.
+Clicking Sign up again lets you change your pick.
+
+You can choose:
+
+- **One role**: you get that role.
+- **Several roles (flex)**: you're put in whichever one is free, shown like `H2 - @you (flex: H2/R1/R2)`.
+  If someone else later picks your slot as their only role, you get moved to one of your other roles.
+- **BENCH**: you're a backup and won't be put in a slot. You can also tick the roles you're able to cover.
+
+The menu shows which roles are open or taken, and tells you where you'll end up before you confirm.
+
+### Who gets priority
+
+First come, first served. Nobody can take a slot away from someone who signed up before them.
+A flex player can be moved to another of their roles to make room, but only if one is free.
+If not, they keep their slot and the newer person goes on the waitlist.
+
+When a slot opens up, the first person on the waitlist who wanted it is moved in automatically.
+
+Changing your pick puts you at the back of the line.
+
+### Example
+
+1. User 1 picks H2, R1 and R2. They get H2.
+2. User 2 picks only H2. User 1 moves to R1.
+3. User 3 picks only R1. User 1 moves to R2.
+4. User 4 picks only R2. User 1 has nowhere else to go and signed up first, so User 4 is waitlisted.
+
+```
+H2 - @User2
+R1 - @User3
+R2 - @User1
+
+Waitlist - @User4 (R2)
+Bench - @User5 (MT/OT)
+```
+
+If User 3 leaves, User 1 moves back to R1 and User 4 gets R2.
 
 ## Commands
 
-### `/createrun amount text time clearee role [timezone]`
+| Command | What it does |
+|---|---|
+| `/createrun` | Post a new run for people to sign up to |
+| `/settimezone` | Save or change your timezone |
 
-Posts:
+---
 
-```
-5m M4S clear Sunday, September 28, 2026 4:00 PM for @Clearee M1
+## Running your own copy
 
-MT - 
-OT - 
-H1 - 
-H2 - 
-M1 - @Clearee
-M2 - 
-R1 - 
-R2 - 
-```
+You don't need any of this if you're using the invite link above. It's only for hosting the bot yourself.
 
-- **time** is typed in plain English in *your* timezone, e.g. `sept 28 @ 4 PM`, `tomorrow 8pm`, `friday at 7pm`.
-  It becomes a Discord timestamp, so everyone sees it in *their own* local time.
-- **role** is one of MT/OT/H1/H2/M1/M2/R1/R2. The clearee gets tagged in that slot automatically.
-- **timezone** only has to be given once (autocomplete: `America/New_York`, `EST`, `UTC+8`, ...). After that it's remembered.
+### What you need
 
-Under the post:
-- **✅ Sign up**: opens a private menu. Pick MT/OT/H1/H2/M1/M2/R1/R2 and press **Confirm**. Your @ gets added after that role's `-`.
-- **❌ Leave**: takes you off the roster.
+- [Node.js](https://nodejs.org) 18.17 or newer (the LTS version is fine)
+- A Discord bot token
 
-Only roles that are still open show up in the menu. Each person can hold one slot.
-
-### `/settimezone timezone`
-
-Saves your timezone for `/createrun`.
-
-## Setup
-
-### 1. Install Node.js
-
-You need Node.js 18.17 or newer. Download the **LTS** version from
-[nodejs.org](https://nodejs.org) and install it with the default options.
-To check it worked, open a new terminal and run `node --version`.
-
-### 2. Create the bot in Discord
+### 1. Make a bot on Discord
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**.
-2. Open the **Bot** tab, click **Reset Token**, and copy the token. Keep it private,
-   because anyone who has it can control your bot.
+2. On the **Bot** tab, click **Reset Token** and copy it. Don't share it with anyone.
+3. Under **OAuth2 → URL Generator**, tick `bot` and `applications.commands`, then tick
+   View Channels, Send Messages and Read Message History. Open the link it gives you to add the bot to your server.
 
-The bot doesn't need any Privileged Gateway Intents.
+### 2. Add your token
 
-### 3. Invite it to your server
+Copy `.env.example` to a new file called `.env` and paste your token in:
 
-1. Open **OAuth2 → URL Generator**.
-2. Scopes: tick **`bot`** and **`applications.commands`**.
-3. Bot permissions: tick **View Channels**, **Send Messages**, and **Read Message History**.
-4. Open the generated URL and pick your server.
+```
+DISCORD_TOKEN=your-token-here
+GUILD_ID=all
+```
 
-### 4. Add your token
+`GUILD_ID=all` makes the commands show up straight away in every server the bot is in.
+You can also list specific server IDs separated by commas, or leave it blank to register
+the commands globally (slower, can take up to an hour).
 
-1. Copy `.env.example` to a new file named `.env` in the same folder.
-   (`start_bot.bat` does this for you the first time you run it.)
-2. Open `.env` in Notepad and paste your token after `DISCORD_TOKEN=`, with no spaces or quotes:
+### 3. Start it
 
-   ```
-   DISCORD_TOKEN=your-token-here
-   GUILD_ID=123456789012345678
-   ```
+On Windows, double-click `start_bot.bat`. The first time, it creates `.env` for you and
+opens it in Notepad. Paste your token, save, and run it again. It installs everything it
+needs and starts the bot.
 
-3. Optional but recommended: set `GUILD_ID` so the commands show up right away (see
-   [Using the bot in multiple servers](#using-the-bot-in-multiple-servers)). To get a server's
-   ID, turn on **Developer Mode** in Discord (**User Settings → Advanced**), then right-click
-   the server icon and choose **Copy Server ID**.
-
-`.env` is listed in `.gitignore`, so your token is never committed.
-
-## Running the bot
-
-### Windows: double-click `start_bot.bat`
-
-`start_bot.bat` handles everything:
-
-- It checks that Node.js is installed.
-- On the first run it creates `.env` and opens it in Notepad so you can paste your token.
-  Save the file, then double-click `start_bot.bat` again.
-- It runs `npm install` automatically the first time (or if `node_modules` is missing).
-- It starts the bot.
-
-When you see `Logged in as YourBot#1234`, the bot is online. Leave the window open,
-because closing it (or pressing **Ctrl+C**) stops the bot. If the bot crashes, the window
-stays open so you can read the error.
-
-### Any OS: from a terminal
-
-Run these in the `merc-scheduling-bot` folder:
+On any other system, run this in the project folder:
 
 ```
 npm install
 npm start
 ```
 
-You only need to run `npm install` the first time, and again after updating `package.json`.
+Once you see `Logged in as ...` the bot is online. Keep the window open, since closing it stops the bot.
+After changing any code, stop the bot and start it again.
 
-### Using the bot in multiple servers
+To run the tests: `npm test`
 
-The bot can be in as many servers as you like. Invite it to each one with the same URL from
-[step 3](#3-invite-it-to-your-server). Run posts, sign-ups and saved timezones all work
-independently in every server. A user's saved timezone follows them across servers.
-
-`GUILD_ID` in `.env` controls where the slash commands are registered:
-
-| `GUILD_ID=` | Where commands appear | Speed |
-|---|---|---|
-| *(empty)* | Every server the bot is in | Can take up to an hour after changes |
-| `all` | Every server the bot is in, including ones it joins later | Instant. **Best for testing.** |
-| `111111111111111111,222222222222222222` | Only the listed servers (comma separated) | Instant |
-
-With `all`, or with a listed ID, adding the bot to a server registers the commands there right
-away, without a restart. When you switch between modes, the bot removes the old copies, so
-commands never show up twice. Restart the bot after changing `GUILD_ID`.
-
-### Updating the bot
-
-After changing the code, stop the bot and start it again. Slash command changes are sent
-to Discord on every start.
-
-### Troubleshooting
+### Something not working?
 
 | Problem | Fix |
 |---|---|
-| `Missing DISCORD_TOKEN` | `.env` is missing or the token line is empty. See [step 4](#4-add-your-token). |
-| `An invalid token was provided` | The token is wrong or was reset. Copy a new one from the **Bot** tab. |
-| `'node' is not recognized` | Node.js isn't installed, or you need to open a new terminal after installing it. |
-| Commands don't appear | Set `GUILD_ID=all` in `.env` and restart the bot. Also check the invite URL included `applications.commands`. |
-| `the bot isn't in that server yet` | A listed `GUILD_ID` doesn't match a server the bot is in. Invite the bot there, or fix the ID. |
-| Commands show up twice | Restart the bot once. It clears the leftover copies on startup. |
-| "Something went wrong" on Sign up | Give the bot **View Channels** and **Read Message History** in that channel. |
+| `Missing DISCORD_TOKEN` | `.env` is missing or the token is blank. |
+| `An invalid token was provided` | The token is wrong or was reset. Get a new one from the Bot tab. |
+| `'node' is not recognized` | Install Node.js, then open a new terminal. |
+| Commands don't show up | Set `GUILD_ID=all` and restart. Make sure the invite included `applications.commands`. |
+| Commands show up twice | Restart the bot once and it cleans them up. |
+| "Something went wrong" when signing up | The bot needs View Channels and Read Message History in that channel. |
 
-## Files
-
-| File | What it is |
-|---|---|
-| `start_bot.bat` | Double-click to run the bot on Windows. |
-| `.env` | Your token and server ID. You create this from `.env.example`. |
-| `src/index.js` | Entry point: slash commands, buttons, and the sign-up menu. |
-| `src/roster.js` | Builds the run post and reads or fills role slots. |
-| `src/time.js` | Turns text like `sept 28 @ 4 PM` into a Discord timestamp. |
-| `src/timezones.js` | Timezone lookup and autocomplete, plus each user's saved timezone. |
-| `data/timezones.json` | Created automatically. Stores each user's saved timezone. |
-| `LICENSE` | MIT License. |
-| `TERMS_OF_SERVICE.md` | Terms of Service. |
-| `PRIVACY_POLICY.md` | Privacy Policy. |
-
-`.env` and `data/` are listed in `.gitignore`, so your token and users' saved timezones
-are never pushed to GitHub.
-
-## Legal
-
-- [Terms of Service](TERMS_OF_SERVICE.md)
-- [Privacy Policy](PRIVACY_POLICY.md)
-
-Discord asks for links to these in the Developer Portal (**General Information → Terms of
-Service URL / Privacy Policy URL**) if you make the bot public or verify it. After pushing
-to GitHub, you can use the links to these files in your repository.
+Your token (`.env`) and the bot's saved data (`data/`) are in `.gitignore`, so they never get pushed to GitHub.
 
 ## Contact
 
@@ -175,4 +157,4 @@ stephk @ discord
 
 ## License
 
-Released under the [MIT License](LICENSE). Copyright (c) 2026 StephK.
+[MIT](LICENSE) © 2026 StephK

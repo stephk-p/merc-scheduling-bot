@@ -11,7 +11,17 @@ import {
   StringSelectMenuBuilder,
 } from 'discord.js';
 import { DateTime } from 'luxon';
-import { ROLES, buildRunContent, findUserSlot, openRoles, parseRoster, setSlot } from './roster.js';
+import {
+  BENCH,
+  ROLES,
+  describeSignup,
+  parsePost,
+  placementOf,
+  renderRun,
+  roleStatus,
+  selectionToSignup,
+} from './roster.js';
+import { deleteRun, getRun, setRun } from './runs.js';
 import { parseTime } from './time.js';
 import { autocompleteZones, getUserZone, resolveZone, setUserZone } from './timezones.js';
 
@@ -62,17 +72,53 @@ function runButtons() {
   );
 }
 
-function rolePicker(messageId, roles, selected = null) {
+const PICK_HELP =
+  '**Pick one role** to lock it in, or **several roles to flex**: you get whichever of them is free, ' +
+  'and you move to another if someone picks your slot as their only role.\n' +
+  'Whoever signs up first has priority. If your pick is held by someone earlier, you go on the ' +
+  '**Waitlist** and are moved in automatically when it opens up.\n' +
+  'Add **BENCH** to be a backup instead of taking a slot. You can add the roles you can cover.';
+
+const STATUS_TEXT = {
+  open: 'Open',
+  flex: 'Held by a flex player who can move. Picking only this takes it.',
+  taken: 'Taken. Picking only this puts you on the waitlist.',
+};
+
+/**
+ * @param {string} messageId run post ID
+ * @param {Record<string,string>} status from roleStatus()
+ * @param {string[]} selected currently selected values
+ * @param {boolean} canConfirm whether the selection is valid
+ */
+function rolePicker(messageId, status, selected = [], canConfirm = false) {
+  const options = [
+    ...ROLES.map((r) => ({
+      label: r,
+      value: r,
+      description: STATUS_TEXT[status[r]],
+      default: selected.includes(r),
+    })),
+    {
+      label: 'BENCH',
+      value: BENCH,
+      description: 'Backup only. Add any roles you can cover.',
+      default: selected.includes(BENCH),
+    },
+  ];
+
   const select = new StringSelectMenuBuilder()
     .setCustomId(`run:select:${messageId}`)
-    .setPlaceholder('Choose your role')
-    .addOptions(roles.map((r) => ({ label: r, value: r, default: r === selected })));
+    .setPlaceholder('Choose one or more roles')
+    .setMinValues(1)
+    .setMaxValues(options.length)
+    .addOptions(options);
 
   const confirm = new ButtonBuilder()
-    .setCustomId(`run:confirm:${messageId}:${selected ?? ''}`)
-    .setLabel(selected ? `Confirm ${selected}` : 'Confirm')
+    .setCustomId(`run:confirm:${messageId}:${selected.join('.')}`)
+    .setLabel(canConfirm ? `Confirm: ${describeSignup(selectionToSignup('', selected))}` : 'Confirm')
     .setStyle(ButtonStyle.Primary)
-    .setDisabled(!selected);
+    .setDisabled(!canConfirm);
 
   return [
     new ActionRowBuilder().addComponents(select),
@@ -114,11 +160,15 @@ async function handleCreateRun(interaction) {
   if (parsed.error) return interaction.reply(ephemeral(parsed.error));
 
   const header = `${amount} ${text} <t:${parsed.ts}:f> for ${clearee} ${role}`;
+  const signups = [{ userId: clearee.id, mode: 'firm', roles: [role] }];
+  const rendered = renderRun(header, signups);
   await interaction.reply({
-    content: setSlot(buildRunContent(header), role, `<@${clearee.id}>`),
+    content: rendered.content,
     components: [runButtons()],
     allowedMentions: { users: [clearee.id] },
   });
+  const post = await interaction.fetchReply();
+  setRun(post.id, { header, startsAt: parsed.ts, signups, placed: rendered.placed });
 }
 
 async function handleSetTimezone(interaction) {
@@ -130,71 +180,134 @@ async function handleSetTimezone(interaction) {
   return interaction.reply(ephemeral(`Timezone saved as **${zone}** (your time now: ${now}).`));
 }
 
-async function handleJoin(interaction) {
-  const slots = parseRoster(interaction.message.content);
-  const current = findUserSlot(slots, interaction.user.id);
-  if (current) {
-    return interaction.reply(ephemeral(`You're already signed up as **${current}**. Press ❌ Leave first to switch.`));
+// ---- Run state helpers ----
+
+async function fetchPost(interaction, messageId) {
+  const channel = interaction.channel ?? (await interaction.client.channels.fetch(interaction.channelId));
+  return channel.messages.fetch(messageId).catch(() => null);
+}
+
+/** Saved state for a run post, or state rebuilt from the post text if none was saved. */
+function runFromPost(post) {
+  const saved = getRun(post.id);
+  if (saved) return saved;
+  const parsed = parsePost(post.content);
+  const ts = parsed.header.match(/<t:(-?\d+)/);
+  return { ...parsed, startsAt: ts ? Number(ts[1]) : null };
+}
+
+/** Everyone except this user, plus what the roles look like to them. */
+function viewFor(run, userId) {
+  const others = run.signups.filter((s) => s.userId !== userId);
+  return { others, status: roleStatus(others, run.placed) };
+}
+
+const selectionValues = (s) => (s.mode === 'bench' ? [...s.roles, BENCH] : [...s.roles]);
+
+/** What happened (or, with preview, what would happen) to a sign-up. */
+function outcomeText(signup, rendered, preview = false) {
+  const p = placementOf(signup, rendered);
+  const you = preview ? "You'll be" : "✅ You're";
+  if (p.bench) {
+    return signup.roles.length
+      ? `${you} on the bench as a backup for **${signup.roles.join('/')}**.`
+      : `${you} on the bench.`;
   }
-  const open = openRoles(slots);
-  if (!open.length) return interaction.reply(ephemeral('This run is full.'));
+  if (p.waitlist) {
+    const held = signup.roles.length === 1
+      ? `**${signup.roles[0]}** is held by someone who signed up earlier`
+      : `**${signup.roles.join('/')}** are all held by people who signed up earlier`;
+    return `${you} on the **Waitlist**: ${held}. You'll be moved in automatically if a slot opens up.`;
+  }
+  if (p.movable) {
+    return `${you} in **${p.role}** for now. If someone picks ${p.role} as their only role, ` +
+      "you'll move to another of your roles.";
+  }
+  return `${you} in **${p.role}**.`;
+}
+
+// ---- Button / menu handlers ----
+
+async function handleJoin(interaction) {
+  const post = interaction.message;
+  const run = runFromPost(post);
+  const mine = run.signups.find((s) => s.userId === interaction.user.id);
+  const { status } = viewFor(run, interaction.user.id);
+
+  const current = mine
+    ? `You're signed up as **${describeSignup(mine)}**. Picking again replaces that ` +
+      '(and puts you at the back of the line).\n\n'
+    : '';
 
   return interaction.reply({
-    content: 'Select your role, then press **Confirm**.',
-    components: rolePicker(interaction.message.id, open),
+    content: current + PICK_HELP,
+    components: rolePicker(post.id, status, mine ? selectionValues(mine) : []),
     flags: MessageFlags.Ephemeral,
   });
 }
 
 async function handleSelect(interaction, messageId) {
-  const selected = interaction.values[0];
-  const roles = interaction.component.options.map((o) => o.value);
+  const values = interaction.values;
+  const post = await fetchPost(interaction, messageId);
+  if (!post) {
+    deleteRun(messageId);
+    return interaction.update({ content: 'That run post no longer exists.', components: [] });
+  }
+
+  const run = runFromPost(post);
+  const { others, status } = viewFor(run, interaction.user.id);
+  const signup = selectionToSignup(interaction.user.id, values);
+  const preview = renderRun(run.header, [...others, signup], run.placed);
+
   return interaction.update({
-    content: `Selected **${selected}**. Press **Confirm** to lock it in.`,
-    components: rolePicker(messageId, roles, selected),
+    content: `${outcomeText(signup, preview, true)}\nPress **Confirm** to sign up as **${describeSignup(signup)}**.`,
+    components: rolePicker(messageId, status, values, true),
   });
 }
 
-async function handleConfirm(interaction, messageId, role) {
+async function handleConfirm(interaction, messageId, encoded) {
+  const values = encoded ? encoded.split('.') : [];
+
   return withLock(messageId, async () => {
-    const channel = interaction.channel ?? (await interaction.client.channels.fetch(interaction.channelId));
-    const post = await channel.messages.fetch(messageId);
-    const slots = parseRoster(post.content);
-
-    const current = findUserSlot(slots, interaction.user.id);
-    if (current) {
-      return interaction.update({ content: `You're already signed up as **${current}**.`, components: [] });
+    const post = await fetchPost(interaction, messageId);
+    if (!post) {
+      deleteRun(messageId);
+      return interaction.update({ content: 'That run post no longer exists.', components: [] });
     }
 
-    if (slots[role]) {
-      const open = openRoles(slots);
-      if (!open.length) return interaction.update({ content: 'Sorry, the run just filled up.', components: [] });
-      return interaction.update({
-        content: `**${role}** was just taken. Pick another role.`,
-        components: rolePicker(messageId, open),
-      });
+    const run = runFromPost(post);
+    const others = run.signups.filter((s) => s.userId !== interaction.user.id);
+    const signup = selectionToSignup(interaction.user.id, values);
+    if (signup.mode !== 'bench' && !signup.roles.length) {
+      return interaction.update({ content: 'Pick at least one role, or BENCH.', components: [] });
     }
 
-    await post.edit({
-      content: setSlot(post.content, role, `<@${interaction.user.id}>`),
-      allowedMentions: { parse: [] },
-    });
-    return interaction.update({ content: `✅ You're signed up as **${role}**.`, components: [] });
+    // A new or changed pick goes to the back of the line. Anyone who signed up earlier keeps
+    // priority, so if the pick is held by an earlier sign-up this user is waitlisted.
+    const signups = [...others, signup];
+    const rendered = renderRun(run.header, signups, run.placed);
+    if (rendered.content.length > 2000) {
+      return interaction.update({ content: 'This run post is full and can\'t fit more sign-ups.', components: [] });
+    }
+
+    await post.edit({ content: rendered.content, allowedMentions: { parse: [] } });
+    setRun(messageId, { ...run, signups, placed: rendered.placed });
+    return interaction.update({ content: outcomeText(signup, rendered), components: [] });
   });
 }
 
 async function handleLeave(interaction) {
   return withLock(interaction.message.id, async () => {
     const post = await interaction.message.fetch();
-    const slots = parseRoster(post.content);
-    const current = findUserSlot(slots, interaction.user.id);
-    if (!current) return interaction.reply(ephemeral("You aren't signed up for this run."));
+    const run = runFromPost(post);
+    const mine = run.signups.find((s) => s.userId === interaction.user.id);
+    if (!mine) return interaction.reply(ephemeral("You aren't signed up for this run."));
 
-    await interaction.update({
-      content: setSlot(post.content, current, ''),
-      allowedMentions: { parse: [] },
-    });
-    return interaction.followUp(ephemeral(`Removed you from **${current}**.`));
+    const signups = run.signups.filter((s) => s !== mine);
+    const rendered = renderRun(run.header, signups, run.placed);
+    await interaction.update({ content: rendered.content, allowedMentions: { parse: [] } });
+    setRun(post.id, { ...run, signups, placed: rendered.placed });
+    return interaction.followUp(ephemeral(`Removed you from the run (you were **${describeSignup(mine)}**).`));
   });
 }
 
@@ -274,11 +387,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (interaction.isButton()) {
-      const [ns, action, messageId, role] = interaction.customId.split(':');
+      const [ns, action, messageId, picks] = interaction.customId.split(':');
       if (ns !== 'run') return;
       if (action === 'join') return await handleJoin(interaction);
       if (action === 'leave') return await handleLeave(interaction);
-      if (action === 'confirm') return await handleConfirm(interaction, messageId, role);
+      if (action === 'confirm') return await handleConfirm(interaction, messageId, picks);
       return;
     }
 

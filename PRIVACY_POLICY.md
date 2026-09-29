@@ -7,25 +7,31 @@ collects and how it's used.
 
 ## Information the Bot stores
 
-The Bot keeps one file on the machine it runs on. For each user who sets a timezone, it
-stores:
+The Bot keeps two files on the machine it runs on.
+
+**Saved timezones.** For each user who sets a timezone, it stores:
 - The user's Discord user ID
 - The timezone they chose (for example, `America/New_York`)
 
 A timezone is saved when a user runs `/settimezone`, or fills in the `timezone` option
 on `/createrun`. Nothing is saved for users who never do either.
 
-The Bot has no database for runs or sign-ups. The roster lives only in the run post
-itself, which is a normal Discord message in your server.
+**Run sign-ups.** For each run post, it stores:
+- The run post's message ID, the post's first line (amount, text, time and clearee)
+  and the run's start time
+- For each person signed up: their Discord user ID, the roles they picked, whether they
+  picked BENCH, and the order they signed up in
+
+This lets the Bot place flex players fairly and keep the order after a restart.
 
 ## Information the Bot processes but does not store
 
 - **Command input.** The amount, text, time, clearee and role entered in `/createrun`
-  are used to build the run post. They aren't stored anywhere except the post itself.
-- **User IDs and mentions.** When a user signs up for a role, their mention (which
-  contains their Discord user ID) is added to the run post. When a user leaves, it is
-  removed. The Bot reads the post to see who holds which role, and doesn't keep a
-  separate copy.
+  are used to build the run post. Apart from the run sign-up record described above,
+  they're not stored.
+- **User IDs and mentions.** When a user signs up, their mention (which contains their
+  Discord user ID) is added to the run post. When a user leaves, it is removed from the
+  post and from the run's saved sign-ups.
 - **Server and channel IDs.** The Bot uses these to register its commands and to edit
   run posts. They are not stored.
 
@@ -49,14 +55,18 @@ law. All interactions pass through Discord and are also covered by
 A saved timezone is kept until the user changes it or asks for it to be deleted.
 Removing the Bot from a server doesn't delete saved timezones, because they belong to
 users rather than servers. Run posts are normal Discord messages. They stay until someone
-with permission deletes them, and deleting a post removes its roster.
+with permission deletes them.
 
-To have your saved timezone deleted, use the contact method listed under Contact below.
+Run sign-ups are deleted automatically 14 days after the run's start time. A user's
+sign-up is removed as soon as they press Leave.
+
+To have your saved data deleted, use the contact method listed under Contact below.
 
 ## Where data is stored
 
-Saved timezones are stored in a local file (`data/timezones.json`) on the machine that
-runs the Bot. They are not sent to any analytics service or data broker.
+Saved timezones and run sign-ups are stored in local files (`data/timezones.json` and
+`data/runs.json`) on the machine that runs the Bot. They are not sent to any analytics
+service or data broker.
 
 If you run your own copy of the Bot from this source code, you are the operator of that
 copy and are responsible for the data it stores.
@@ -64,7 +74,7 @@ copy and are responsible for the data it stores.
 ## Your rights
 
 You can change your saved timezone at any time with `/settimezone`, stop using the Bot at
-any time, or ask the operator to delete your saved timezone. Server administrators can
+any time, leave a run with the Leave button, or ask the operator to delete your saved data. Server administrators can
 remove the Bot from their server at any time.
 
 ## Changes to this policy

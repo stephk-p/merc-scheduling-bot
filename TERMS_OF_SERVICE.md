@@ -9,9 +9,10 @@ Bot to a server or using its commands, you agree to these Terms.
 
 The Bot lets users post run announcements with `/createrun`. Each post includes a
 scheduled time and a roster of roles (MT, OT, H1, H2, M1, M2, R1, R2). Other users can
-sign up for an open role, or leave it, using the buttons on the post. The Bot edits the
-post to show who has signed up. It also remembers each user's timezone so it can convert
-typed times into Discord timestamps.
+sign up for one role, several roles (flex), or the bench, or leave, using the buttons on
+the post. The Bot places flex players automatically and edits the post to show who has
+signed up. It also remembers each user's timezone so it can convert typed times into
+Discord timestamps.
 
 ## Acceptable use
 
