@@ -1,18 +1,24 @@
 import * as chrono from 'chrono-node';
-import { DateTime } from 'luxon';
+import { DateTime, FixedOffsetZone } from 'luxon';
 
 /**
  * Parse a human time like "sept 28 @ 4 PM" in the given IANA zone into a unix timestamp (seconds).
  * Also accepts an existing Discord timestamp (<t:1234567890:F>) or a raw unix timestamp.
  * If the text contains an explicit timezone (e.g. "4pm EST"), that wins over `zone`.
  *
- * @returns {{ ts: number } | { error: string }}
+ * `date` is the same moment in the timezone the time was written in, so the day matches what
+ * the user typed.
+ *
+ * @returns {{ ts: number, date: DateTime } | { error: string }}
  */
 export function parseTime(input, zone) {
   const raw = input.trim();
 
   const stamp = raw.match(/^<t:(-?\d+)(?::[tTdDfFR])?>$/) || raw.match(/^(\d{9,11})$/);
-  if (stamp) return { ts: Number(stamp[1]) };
+  if (stamp) {
+    const ts = Number(stamp[1]);
+    return { ts, date: DateTime.fromSeconds(ts, { zone: zone ?? 'UTC' }) };
+  }
 
   const cleaned = raw.replace(/@/g, ' at ').replace(/\s+/g, ' ');
   const now = zone ? DateTime.now().setZone(zone) : DateTime.utc();
@@ -29,7 +35,9 @@ export function parseTime(input, zone) {
   const start = results[0].start;
 
   if (start.isCertain('timezoneOffset')) {
-    return { ts: Math.floor(start.date().getTime() / 1000) };
+    const ts = Math.floor(start.date().getTime() / 1000);
+    const offset = FixedOffsetZone.instance(start.get('timezoneOffset') ?? 0);
+    return { ts, date: DateTime.fromSeconds(ts, { zone: offset }) };
   }
 
   if (!zone) {
@@ -53,5 +61,5 @@ export function parseTime(input, zone) {
   );
 
   if (!dt.isValid) return { error: `That time doesn't exist in ${zone}.` };
-  return { ts: Math.floor(dt.toSeconds()) };
+  return { ts: Math.floor(dt.toSeconds()), date: dt };
 }

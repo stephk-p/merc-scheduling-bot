@@ -12,37 +12,68 @@
 //   - If the flex player signed up first and their other roles are all taken, they keep the slot
 //     and the one-role user goes on the waitlist for it.
 // Anyone who can't be placed is waitlisted, and is placed automatically (in sign-up order) as soon
-// as a slot they picked opens up. Flex players stay in their current slot when possible, so the
-// roster doesn't jump around.
+// as a slot they picked opens up.
+//
+// Flex players' roles are kept in the order they picked them, and that order is their preference:
+// they get the first role on their list that's free, and move back up their list whenever a
+// higher choice opens up.
 
 export const ROLES = ['MT', 'OT', 'H1', 'H2', 'M1', 'M2', 'R1', 'R2'];
 export const BENCH = 'BENCH';
 
-/** @typedef {{ userId: string, mode: 'firm'|'flex'|'bench', roles: string[] }} Signup */
+// Jobs each role can be played as. Tanks (MT/OT) and melee (M1/M2) must pick at least one job;
+// for the other roles it's optional.
+export const TANK_JOBS = ['GNB', 'DRK', 'PLD', 'WAR'];
+export const MELEE_JOBS = ['NIN', 'MNK', 'DRG', 'SAM', 'RPR', 'VPR'];
+export const ROLE_JOBS = {
+  MT: TANK_JOBS,
+  OT: TANK_JOBS,
+  H1: ['WHM', 'AST'],
+  H2: ['SCH', 'SGE'],
+  M1: MELEE_JOBS,
+  M2: MELEE_JOBS,
+  R1: ['BRD', 'MCH', 'DNC'],
+  R2: ['SMN', 'BLM', 'RDM', 'PCT'],
+};
+export const JOBS = [...new Set(Object.values(ROLE_JOBS).flat())];
+export const REQUIRED_JOB_GROUPS = [
+  { key: 'tank', label: 'tank', roles: ['MT', 'OT'], jobs: TANK_JOBS },
+  { key: 'melee', label: 'melee', roles: ['M1', 'M2'], jobs: MELEE_JOBS },
+];
+export const OPTIONAL_JOB_ROLES = ['H1', 'H2', 'R1', 'R2'];
 
-const sortRoles = (roles) => ROLES.filter((r) => roles.includes(r));
+/** Every job that can be played in any of these roles. */
+export const jobsForRoles = (roles) => JOBS.filter((j) => roles.some((r) => ROLE_JOBS[r]?.includes(j)));
+
+/** Required job groups (tank/melee) that have a role picked but no job picked yet. */
+export function missingJobs(roles, jobs = []) {
+  return REQUIRED_JOB_GROUPS
+    .map((g) => ({ ...g, picked: roles.filter((r) => g.roles.includes(r)) }))
+    .filter((g) => g.picked.length && !jobs.some((j) => g.jobs.includes(j)));
+}
+
+/** @typedef {{ userId: string, mode: 'firm'|'flex'|'bench', roles: string[], jobs?: string[] }} Signup */
+
+/** Valid roles, without duplicates, in the order given (that order is the user's preference). */
+const pickRoles = (roles) => [...new Set(roles)].filter((r) => ROLES.includes(r));
 const PROBE = '\0probe';
 
 /**
  * Work out who sits where.
  * @param {Signup[]} signups in sign-up order (earliest first)
- * @param {Record<string,string>} placed flex player -> role they held last time (for stability)
+ * @param {Record<string,string>} _placed no longer used (preference order decides); kept so
+ *   saved runs and callers don't need changing
  */
-export function assign(signups, placed = {}) {
+export function assign(signups, _placed = {}) {
   const players = signups.filter((s) => s.mode !== 'bench' && s.roles.length);
   const bench = signups.filter((s) => s.mode === 'bench');
   const owner = new Map(); // role -> index into players
 
-  const preferred = (i) => {
-    const { roles, userId } = players[i];
-    const prev = placed[userId];
-    return roles.includes(prev) ? [prev, ...roles.filter((r) => r !== prev)] : roles;
-  };
-
-  // Augmenting-path matching (Kuhn). Players already holding a slot may be moved to another of
-  // their roles, but never lose their slot. A failed attempt changes nothing.
+  // Augmenting-path matching (Kuhn). Each player tries their roles in the order they picked them.
+  // Players already holding a slot may be moved to another of their roles (their highest free
+  // choice), but never lose their slot. A failed attempt changes nothing.
   const tryAssign = (i, seen) => {
-    const order = preferred(i);
+    const order = players[i].roles;
     const free = order.find((r) => !seen.has(r) && !owner.has(r));
     if (free) {
       seen.add(free);
@@ -68,7 +99,7 @@ export function assign(signups, placed = {}) {
   const slots = Object.fromEntries(ROLES.map((r) => [r, null]));
   for (const [r, i] of owner) {
     const s = players[i];
-    slots[r] = { userId: s.userId, flex: s.mode === 'flex', roles: s.roles };
+    slots[r] = { userId: s.userId, flex: s.mode === 'flex', roles: s.roles, jobs: s.jobs ?? [] };
   }
   return { slots, waiting, bench };
 }
@@ -101,8 +132,10 @@ const mention = (id) => `<@${id}>`;
  * @param {string} header first line of the post
  * @param {Signup[]} signups
  * @param {Record<string,string>} placed
+ * @param {Record<string,string>} labels user ID -> plain text to show instead of an @mention
  */
-export function renderRun(header, signups, placed = {}) {
+export function renderRun(header, signups, placed = {}, labels = {}) {
+  const who = (id) => labels[id] ?? mention(id);
   const result = assign(signups, placed);
   const status = roleStatus(signups, placed);
   const nextPlaced = {};
@@ -122,16 +155,19 @@ export function renderRun(header, signups, placed = {}) {
       const options = slot.roles.filter((x) => x === r || result.slots[x]?.flex !== false);
       tag = ` (flex: ${options.join('/')})`;
     }
-    lines.push(`${r} - ${mention(slot.userId)}${tag}`);
+    // Jobs they can play in this slot, e.g. "MT - @user (GNB/DRK)".
+    const jobs = slot.jobs.filter((j) => ROLE_JOBS[r].includes(j));
+    const jobTag = jobs.length ? ` (${jobs.join('/')})` : '';
+    lines.push(`${r} - ${who(slot.userId)}${jobTag}${tag}`);
   }
 
   const extra = [];
   if (result.waiting.length) {
-    extra.push(`Waitlist - ${result.waiting.map((w) => `${mention(w.userId)} (${w.roles.join('/')})`).join(', ')}`);
+    extra.push(`Waitlist - ${result.waiting.map((w) => `${who(w.userId)} (${w.roles.join('/')})`).join(', ')}`);
   }
   if (result.bench.length) {
     extra.push(`Bench - ${result.bench
-      .map((b) => mention(b.userId) + (b.roles.length ? ` (${b.roles.join('/')})` : ''))
+      .map((b) => who(b.userId) + (b.roles.length ? ` (${b.roles.join('/')})` : ''))
       .join(', ')}`);
   }
   if (extra.length) lines.push('', ...extra);
@@ -139,9 +175,10 @@ export function renderRun(header, signups, placed = {}) {
   return { content: lines.join('\n'), placed: nextPlaced, result, status };
 }
 
-const SLOT_RE = /^(MT|OT|H1|H2|M1|M2|R1|R2) -\s*(?:<@!?(\d+)>)?(?:\s*\(flex: ([A-Z0-9/]+)\))?/;
+const SLOT_RE =
+  /^(MT|OT|H1|H2|M1|M2|R1|R2) -\s*(?:<@!?(\d+)>)?(?:\s*\(([A-Z]{3}(?:\/[A-Z]{3})*)\))?(?:\s*\(flex: ([A-Z0-9/]+)\))?/;
 const ENTRY_RE = /<@!?(\d+)>(?:\s*\(([A-Z0-9/]+)\))?/g;
-const parseRoles = (text) => sortRoles((text ?? '').split('/'));
+const parseRoles = (text) => pickRoles((text ?? '').split('/'));
 
 /**
  * Rebuild sign-ups from a post's text. Used when a run has no saved state
@@ -149,7 +186,12 @@ const parseRoles = (text) => sortRoles((text ?? '').split('/'));
  * The exact sign-up order can't be recovered, so people already in a slot come first.
  */
 export function parsePost(content) {
-  const [header, ...rest] = content.split('\n');
+  const all = content.split('\n');
+  // The header is everything before the first blank line (test runs have a "Merc Run ID" line on top).
+  const blank = all.indexOf('');
+  const headerEnd = blank === -1 ? 1 : blank;
+  const header = all.slice(0, headerEnd).join('\n');
+  const rest = all.slice(headerEnd);
   const inSlots = [];
   const waiting = [];
   const bench = [];
@@ -159,11 +201,13 @@ export function parsePost(content) {
     const m = line.match(SLOT_RE);
     if (m) {
       if (!m[2]) continue;
-      if (m[3]) {
-        inSlots.push({ userId: m[2], mode: 'flex', roles: parseRoles(m[3]) });
+      const jobs = (m[3] ?? '').split('/').filter((j) => JOBS.includes(j));
+      const withJobs = jobs.length ? { jobs } : {};
+      if (m[4]) {
+        inSlots.push({ userId: m[2], mode: 'flex', roles: parseRoles(m[4]), ...withJobs });
         placed[m[2]] = m[1];
       } else {
-        inSlots.push({ userId: m[2], mode: 'firm', roles: [m[1]] });
+        inSlots.push({ userId: m[2], mode: 'firm', roles: [m[1]], ...withJobs });
       }
     } else if (line.startsWith('Waitlist - ') || line.startsWith('Flex - ')) {
       for (const e of line.matchAll(ENTRY_RE)) {
@@ -178,12 +222,30 @@ export function parsePost(content) {
   return { header, signups: [...inSlots, ...waiting, ...bench], placed };
 }
 
-/** Turn select-menu values (e.g. ['H2','R1','BENCH']) into a sign-up. */
-export function selectionToSignup(userId, values) {
-  const roles = sortRoles(values);
-  const mode = values.includes(BENCH) ? 'bench' : roles.length === 1 ? 'firm' : 'flex';
-  return { userId, mode, roles };
+/**
+ * Keep the order someone picked their roles in across menu changes: roles they already had stay
+ * where they were, and newly ticked ones go on the end. Unticked roles drop out.
+ * @param {string[]} previous selection before this change, in pick order
+ * @param {string[]} current values from the menu
+ */
+export function orderedSelection(previous, current) {
+  const kept = previous.filter((v) => current.includes(v));
+  return [...new Set([...kept, ...current])];
 }
+
+/**
+ * Turn select-menu values (e.g. ['R2','H2','BENCH']) and picked jobs into a sign-up.
+ * Role order is kept. Jobs are only kept if they fit one of the picked roles.
+ */
+export function selectionToSignup(userId, values, jobs = []) {
+  const roles = pickRoles(values);
+  const mode = values.includes(BENCH) ? 'bench' : roles.length === 1 ? 'firm' : 'flex';
+  const allowed = jobsForRoles(roles);
+  return { userId, mode, roles, jobs: JOBS.filter((j) => allowed.includes(j) && jobs.includes(j)) };
+}
+
+/** Picked jobs, e.g. "GNB/DRK/WHM" (empty string if none). */
+export const describeJobs = (s) => (s.jobs ?? []).join('/');
 
 /** Where a sign-up ended up: { role } if placed, { waitlist: true } or { bench: true }. */
 export function placementOf(signup, rendered) {

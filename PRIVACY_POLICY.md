@@ -19,10 +19,17 @@ on `/createrun`. Nothing is saved for users who never do either.
 **Run sign-ups.** For each run post, it stores:
 - The run post's message ID, the post's first line (amount, text, time and clearee)
   and the run's start time
-- For each person signed up: their Discord user ID, the roles they picked, whether they
-  picked BENCH, and the order they signed up in
+- For each person signed up: their Discord user ID, the roles they picked, the jobs they
+  picked, whether they picked BENCH, and the order they signed up in
 
 This lets the Bot place flex players fairly and keep the order after a restart.
+
+For every run, it also stores the run's 6-digit Merc Run ID, the server ID, the ID of the
+channel the post is in, the ID of the run's private channel, the ID of the roster copy
+posted in that channel, the Discord user ID of the person who created the run, the
+clearee's name (their server display name, or the name typed in if they aren't matched to a
+server member) and user ID if matched, the run's status (open, completed or failed), and when the
+private channel is due to be deleted.
 
 ## Information the Bot processes but does not store
 
@@ -33,7 +40,13 @@ This lets the Bot place flex players fairly and keep the order after a restart.
   Discord user ID) is added to the run post. When a user leaves, it is removed from the
   post and from the run's saved sign-ups.
 - **Server and channel IDs.** The Bot uses these to register its commands and to edit
-  run posts. They are not stored.
+  run posts. Apart from the run record described above, they are not stored.
+- **Private run channels.** For each run, the Bot creates a private channel and gives the
+  run's creator, clearee and everyone who signs up access to it. Access is
+  removed when someone leaves the run. Messages in that channel are normal Discord
+  messages; the Bot does not read or store them.
+- **Roles.** In servers with role restrictions, the Bot checks a member's roles when they
+  use a command or sign up. Roles are not stored.
 
 The Bot does not read message content other than its own run posts. It does not request
 the Message Content, Server Members or Presence intents.
@@ -59,6 +72,9 @@ with permission deletes them.
 
 Run sign-ups are deleted automatically 14 days after the run's start time. A user's
 sign-up is removed as soon as they press Leave.
+
+A run's private channel, including its messages, is deleted 3 hours after the run is
+marked completed, or right away if the run is deleted with `/managerun`.
 
 To have your saved data deleted, use the contact method listed under Contact below.
 

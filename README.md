@@ -4,7 +4,7 @@ A Discord bot for posting merc runs and letting people sign up for a role.
 
 ## Add the bot to your server!
 
-[Click here to add Merc Scheduling Bot to your server](https://discord.com/oauth2/authorize?client_id=1554373434744504330&permissions=76816&integration_type=0&scope=bot+applications.commands)
+[Click here to add Merc Scheduling Bot to your server](https://discord.com/oauth2/authorize?client_id=1554373434744504330&permissions=268643344&integration_type=0&scope=bot+applications.commands)
 
 Pick your server and click Authorize. You need the Manage Server permission to add bots.
 The commands may take a minute to show up after the bot joins.
@@ -18,21 +18,38 @@ By using the bot you agree to the [Terms of Service](TERMS_OF_SERVICE.md) and
 /createrun amount text time clearee role
 ```
 
-For example, `/createrun amount:5m text:M4S clear time:sept 28 @ 4 PM clearee:@Steph role:M1` posts:
+For example, `/createrun amount:5m text:M4S clear time:sept 28 @ 4 PM clearee:Steph role:M1` posts:
 
 ```
-5m M4S clear Sunday, September 28, 2026 4:00 PM for @Steph M1
+@here
+5m M4S clear Sunday, September 28, 2026 4:00 PM for Steph M1
 
 MT -
 OT -
 H1 -
 H2 -
-M1 - @Steph
+M1 - Steph
 M2 -
 R1 -
 R2 -
 ```
 
+The post pings `@here` on the first line (some servers ping a role instead, see [Role restrictions](#role-restrictions)).
+The ping only goes out when the run is posted, not when people sign up or the post is updated.
+
+It also creates a private channel called `5m-m4s-clear-sep-28` (amount, text and the day of the run)
+in the same category. Only you, the clearee and the people who sign up can see it.
+People are added when they sign up and removed if they leave.
+
+The private channel starts with a pinned copy of the run post (without the ping).
+It's updated along with the run post whenever someone signs up, leaves, or the run is
+completed, failed or rescheduled. Sign up and leave from the original post.
+That roster is the only message the bot posts in the channel. Nobody is @mentioned when they're added.
+
+- **clearee** can be picked from the list of server members as you type, or you can type any name.
+  If it matches a server member (their nickname, display name or username), they get the slot and are
+  added to the private channel. If nobody matches, the name is just shown on the roster and nobody is added.
+  Either way the clearee is shown by name and isn't @mentioned in the run post.
 - **time** can be written however you'd normally say it: `sept 28 @ 4 PM`, `tomorrow 8pm`, `friday at 7pm`.
   Everyone sees it in their own timezone.
 - **role** is the clearee's role. They're added to that slot automatically.
@@ -48,9 +65,26 @@ Clicking Sign up again lets you change your pick.
 You can choose:
 
 - **One role**: you get that role.
-- **Several roles (flex)**: you're put in whichever one is free, shown like `H2 - @you (flex: H2/R1/R2)`.
-  If someone else later picks your slot as their only role, you get moved to one of your other roles.
+- **Several roles (flex)**: tick them in order of preference. You get the first one on your list that's free,
+  shown like `H2 - @you (flex: H2/R1/R2)`. If someone else later picks your slot as their only role, you move
+  to your next choice, and you move back up your list when a higher choice opens up.
+  The menu shows `(choice #1)`, `(choice #2)` and so on next to each role. To change the order, untick a role
+  and tick it again; it goes to the end of your list.
 - **BENCH**: you're a backup and won't be put in a slot. You can also tick the roles you're able to cover.
+
+After picking roles, more menus appear so you can pick your jobs. You can pick more than one:
+
+| Role | Jobs | |
+|---|---|---|
+| MT / OT | GNB, DRK, PLD, WAR | **Required** |
+| M1 / M2 | NIN, MNK, DRG, SAM, RPR, VPR | **Required** |
+| H1 | WHM, AST | Optional |
+| H2 | SCH, SGE | Optional |
+| R1 | BRD, MCH, DNC | Optional |
+| R2 | SMN, BLM, RDM, PCT | Optional |
+
+Confirm stays greyed out until you've picked at least one job for any tank or melee role you ticked.
+Your jobs for the slot you get are shown on the roster, like `MT - @you (GNB/DRK)`.
 
 The menu shows which roles are open or taken, and tells you where you'll end up before you confirm.
 
@@ -66,8 +100,8 @@ Changing your pick puts you at the back of the line.
 
 ### Example
 
-1. User 1 picks H2, R1 and R2. They get H2.
-2. User 2 picks only H2. User 1 moves to R1.
+1. User 1 picks H2, then R1, then R2. They get H2, their first choice.
+2. User 2 picks only H2. User 1 moves to R1, their next choice.
 3. User 3 picks only R1. User 1 moves to R2.
 4. User 4 picks only R2. User 1 has nowhere else to go and signed up first, so User 4 is waitlisted.
 
@@ -80,13 +114,62 @@ Waitlist - @User4 (R2)
 Bench - @User5 (MT/OT)
 ```
 
-If User 3 leaves, User 1 moves back to R1 and User 4 gets R2.
+If User 3 leaves, User 1 moves back to R1 (a higher choice than R2) and User 4 gets R2.
+
+## Test runs and managing runs
+
+`/createrun-test` works exactly like `/createrun`, except:
+
+- The post starts with a random 6-digit **Merc Run ID** (under the ping):
+  ```
+  @here
+  Merc Run ID: 482915
+  5m M4S clear Sunday, September 28, 2026 4:00 PM for Steph M1
+  ...
+  ```
+- The private channel is called `merc-run-482915` instead.
+
+Every run has a Merc Run ID. For `/createrun` runs it isn't shown on the post; you'll see it in the
+private reply you get after creating the run, and `/managerun` lists your runs as you type.
+
+To manage a run, use:
+
+```
+/managerun run_id:482915
+```
+
+You can start typing the ID or the run name and pick it from the list. You get these buttons:
+
+| Button | What happens |
+|---|---|
+| **Completed** | The post is marked completed and sign-ups close. The private channel is deleted 3 hours later. |
+| **Failed** | The post is marked failed and sign-ups close. The channel stays so you can plan a retry. |
+| **Reschedule** | Enter a new time. The post is updated and sign-ups reopen. `/createrun` channels are renamed to the new day. |
+| **Delete run** | Deletes the post and the channel right away (asks you to confirm first). |
+
+Only the person who created the run, or anyone with the Manage Channels permission, can use `/managerun` on it.
+
+The bot needs **Manage Channels** and **Manage Roles** to create run channels, and
+**Mention @everyone, @here and All Roles** for the ping. The invite link above already includes them.
+If you added the bot before, give its role those permissions in Server Settings.
+
+## Role restrictions
+
+A server can limit who creates runs and who signs up. These rules are set in [src/config.js](src/config.js):
+
+- `commandRoles`: only members with one of these roles can use `/createrun`, `/createrun-test` and `/managerun`.
+- `signupRoles`: only members with one of these roles can sign up. Anyone can still press Leave.
+- `pingRole`: the role pinged on new run posts instead of `@here`.
+
+Servers that aren't listed have no restrictions.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `/createrun` | Post a new run for people to sign up to |
+| `/createrun` | Post a new run and create its private channel |
+| `/createrun-test` | Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
+| `/managerun` | Mark a run completed or failed, reschedule it, or delete it |
 | `/settimezone` | Save or change your timezone |
 
 ---
@@ -105,7 +188,8 @@ You don't need any of this if you're using the invite link above. It's only for 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**.
 2. On the **Bot** tab, click **Reset Token** and copy it. Don't share it with anyone.
 3. Under **OAuth2 → URL Generator**, tick `bot` and `applications.commands`, then tick
-   View Channels, Send Messages and Read Message History. Open the link it gives you to add the bot to your server.
+   View Channels, Send Messages, Read Message History, Manage Channels, Manage Roles and
+   Mention Everyone. Open the link it gives you to add the bot to your server.
 
 ### 2. Add your token
 
@@ -148,6 +232,9 @@ To run the tests: `npm test`
 | Commands don't show up | Set `GUILD_ID=all` and restart. Make sure the invite included `applications.commands`. |
 | Commands show up twice | Restart the bot once and it cleans them up. |
 | "Something went wrong" when signing up | The bot needs View Channels and Read Message History in that channel. |
+| `/createrun` says it needs permissions | Give the bot's role Manage Channels and Manage Roles. |
+| "Only members with the ... role" | That server limits the command or sign-ups to a role. See [Role restrictions](#role-restrictions). |
+| The `@here` or role ping doesn't notify anyone | Give the bot's role **Mention @everyone, @here and All Roles**. |
 
 Your token (`.env`) and the bot's saved data (`data/`) are in `.gitignore`, so they never get pushed to GitHub.
 

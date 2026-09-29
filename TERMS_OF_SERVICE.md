@@ -12,7 +12,8 @@ scheduled time and a roster of roles (MT, OT, H1, H2, M1, M2, R1, R2). Other use
 sign up for one role, several roles (flex), or the bench, or leave, using the buttons on
 the post. The Bot places flex players automatically and edits the post to show who has
 signed up. It also remembers each user's timezone so it can convert typed times into
-Discord timestamps.
+Discord timestamps. It also creates a private channel for each run and deletes it after
+the run is marked completed or deleted.
 
 ## Acceptable use
 
