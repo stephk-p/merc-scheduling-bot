@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Secrets: never commit your bot token
+.env
+.env.*
+!.env.example
+
+# Runtime data (users' saved timezones)
+data/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

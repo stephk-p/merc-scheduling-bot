@@ -1,0 +1,57 @@
+import * as chrono from 'chrono-node';
+import { DateTime } from 'luxon';
+
+/**
+ * Parse a human time like "sept 28 @ 4 PM" in the given IANA zone into a unix timestamp (seconds).
+ * Also accepts an existing Discord timestamp (<t:1234567890:F>) or a raw unix timestamp.
+ * If the text contains an explicit timezone (e.g. "4pm EST"), that wins over `zone`.
+ *
+ * @returns {{ ts: number } | { error: string }}
+ */
+export function parseTime(input, zone) {
+  const raw = input.trim();
+
+  const stamp = raw.match(/^<t:(-?\d+)(?::[tTdDfFR])?>$/) || raw.match(/^(\d{9,11})$/);
+  if (stamp) return { ts: Number(stamp[1]) };
+
+  const cleaned = raw.replace(/@/g, ' at ').replace(/\s+/g, ' ');
+  const now = zone ? DateTime.now().setZone(zone) : DateTime.utc();
+  const results = chrono.parse(
+    cleaned,
+    { instant: now.toJSDate(), timezone: now.offset },
+    { forwardDate: true },
+  );
+
+  if (!results.length) {
+    return { error: `Couldn't understand the time \`${raw}\`. Try something like \`sept 28 @ 4 PM\`.` };
+  }
+
+  const start = results[0].start;
+
+  if (start.isCertain('timezoneOffset')) {
+    return { ts: Math.floor(start.date().getTime() / 1000) };
+  }
+
+  if (!zone) {
+    return {
+      error:
+        "I don't know your timezone yet. Set it once with `/settimezone`, " +
+        'or fill in the `timezone` option on `/createrun`.',
+    };
+  }
+
+  const dt = DateTime.fromObject(
+    {
+      year: start.get('year'),
+      month: start.get('month'),
+      day: start.get('day'),
+      hour: start.get('hour'),
+      minute: start.get('minute'),
+      second: 0,
+    },
+    { zone },
+  );
+
+  if (!dt.isValid) return { error: `That time doesn't exist in ${zone}.` };
+  return { ts: Math.floor(dt.toSeconds()) };
+}

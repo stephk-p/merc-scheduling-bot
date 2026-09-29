@@ -1,0 +1,22 @@
+{
+  "name": "merc-scheduling-bot",
+  "version": "1.0.0",
+  "description": "Discord bot for scheduling merc runs with role sign-ups",
+  "license": "MIT",
+  "author": "StephK",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "chrono-node": "^2.7.7",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5",
+    "luxon": "^3.5.0"
+  }
+}
