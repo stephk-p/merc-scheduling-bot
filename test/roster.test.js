@@ -4,6 +4,7 @@ import {
   describeJobs,
   missingJobs,
   orderedSelection,
+  parseJobInput,
   parsePost,
   placementOf,
   renderRun,
@@ -215,6 +216,14 @@ test('posts with jobs parse back', () => {
   const parsed = parsePost(r.content);
   assert.deepEqual(parsed.signups.find((x) => x.userId === '1').jobs, ['DRK', 'PLD']);
   assert.equal(renderRun(parsed.header, parsed.signups, parsed.placed).content, r.content);
+});
+
+test('clearee job input', () => {
+  assert.deepEqual(parseJobInput('MT', 'drk/gnb'), { jobs: ['GNB', 'DRK'], invalid: [] });
+  assert.deepEqual(parseJobInput('M1', 'NIN, SAM WHM'), { jobs: ['NIN', 'SAM'], invalid: ['WHM'] });
+  assert.deepEqual(parseJobInput('H1', ''), { jobs: [], invalid: [] });
+  assert.equal(missingJobs(['M1'], parseJobInput('M1', '').jobs).length, 1);
+  assert.equal(missingJobs(['H1'], parseJobInput('H1', '').jobs).length, 0);
 });
 
 console.log('\nAll checks passed.');

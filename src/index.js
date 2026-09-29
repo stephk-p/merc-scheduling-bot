@@ -33,6 +33,7 @@ import {
   jobsForRoles,
   missingJobs,
   orderedSelection,
+  parseJobInput,
   parsePost,
   placementOf,
   renderRun,
@@ -76,6 +77,11 @@ function runCommand(name, description) {
         .setDescription("Clearee's role slot (they're filled in there automatically)")
         .setRequired(true)
         .addChoices(...ROLES.map((r) => ({ name: r, value: r }))))
+    .addStringOption((o) =>
+      o.setName('job')
+        .setDescription("Clearee's job(s) for that role, e.g. GNB or NIN/SAM. Required for MT/OT/M1/M2")
+        .setMaxLength(100)
+        .setAutocomplete(true))
     .addStringOption((o) =>
       o.setName('timezone')
         .setDescription('Your timezone (only needed once; it gets remembered)')
@@ -363,6 +369,19 @@ async function autocompleteClearee(interaction, query) {
     });
 }
 
+// Suggests jobs for the picked role. Several can be chained with "/", e.g. "GNB/" suggests "GNB/DRK".
+function autocompleteJobs(interaction, query) {
+  const pool = ROLE_JOBS[interaction.options.getString('role')] ?? JOBS;
+  const parts = query.toUpperCase().split(/[\s,/]+/);
+  const partial = parts.pop();
+  const picked = pool.filter((j) => parts.includes(j));
+  const values = [
+    ...(picked.length && !partial ? [picked.join('/')] : []),
+    ...pool.filter((j) => !picked.includes(j) && j.startsWith(partial)).map((j) => [...picked, j].join('/')),
+  ];
+  return values.slice(0, 25).map((v) => ({ name: v, value: v }));
+}
+
 // Stop typed text from pinging @everyone / @here (the run post allows those for its own ping).
 const noMassPing = (s) => s.replace(/@(everyone|here)/gi, '@\u200b$1');
 
@@ -533,10 +552,23 @@ async function handleCreateRun(interaction, { test = false } = {}) {
   const timeInput = interaction.options.getString('time', true);
   const cleareeInput = interaction.options.getString('clearee', true);
   const role = interaction.options.getString('role', true);
+  const jobInput = interaction.options.getString('job') ?? '';
   const tzInput = interaction.options.getString('timezone');
 
   if (!interaction.inGuild()) {
     return interaction.reply(ephemeral('This command only works in a server.'));
+  }
+
+  const { jobs, invalid } = parseJobInput(role, jobInput);
+  if (invalid.length) {
+    return interaction.reply(ephemeral(
+      `Not a ${role} job: **${escapeMarkdown(invalid.join(', '))}**. Pick from ${ROLE_JOBS[role].join('/')}.`,
+    ));
+  }
+  if (missingJobs([role], jobs).length) {
+    return interaction.reply(ephemeral(
+      `The **job** option is required for ${role}. Pick the clearee's job(s) from ${ROLE_JOBS[role].join('/')}.`,
+    ));
   }
 
   const me = interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
@@ -571,14 +603,15 @@ async function handleCreateRun(interaction, { test = false } = {}) {
   const cleareeKey = cleareeMember?.id ?? `clearee-${runId}`;
 
   // The clearee is named, not @mentioned, in the channel the run is posted in.
-  const header = `${amount} ${text} <t:${parsed.ts}:f> for ${cleareeName} ${role}`;
+  const header = `${amount} ${text} <t:${parsed.ts}:f> for ${cleareeName} ` +
+    (jobs.length ? `${jobs.join('/')} - ${role}` : role);
   const ping = pingFor(interaction.guildId);
   const run = {
     header,
     ping: ping.text,
     title: `${amount} ${text}`,
     startsAt: parsed.ts,
-    signups: [{ userId: cleareeKey, mode: 'firm', roles: [role] }],
+    signups: [{ userId: cleareeKey, mode: 'firm', roles: [role], jobs }],
     placed: {},
     status: 'open',
     runId,
@@ -1131,6 +1164,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const focused = interaction.options.getFocused(true);
       if (focused.name === 'run_id') return await interaction.respond(autocompleteRuns(interaction, focused.value));
       if (focused.name === 'clearee') return await interaction.respond(await autocompleteClearee(interaction, focused.value));
+      if (focused.name === 'job') return await interaction.respond(autocompleteJobs(interaction, focused.value));
       return await interaction.respond(autocompleteZones(focused.value));
     }
 

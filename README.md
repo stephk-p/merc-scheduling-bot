@@ -15,20 +15,20 @@ By using the bot you agree to the [Terms of Service](TERMS_OF_SERVICE.md) and
 ## Creating a run
 
 ```
-/createrun amount text time clearee role
+/createrun amount text time clearee role job
 ```
 
-For example, `/createrun amount:5m text:M4S clear time:sept 28 @ 4 PM clearee:Steph role:M1` posts:
+For example, `/createrun amount:5m text:M4S clear time:sept 28 @ 4 PM clearee:Steph role:M1 job:NIN/SAM` posts:
 
 ```
 @here
-5m M4S clear Sunday, September 28, 2026 4:00 PM for Steph M1
+5m M4S clear Sunday, September 28, 2026 4:00 PM for Steph NIN/SAM - M1
 
 MT -
 OT -
 H1 -
 H2 -
-M1 - Steph
+M1 - Steph (NIN/SAM)
 M2 -
 R1 -
 R2 -
@@ -53,6 +53,9 @@ That roster is the only message the bot posts in the channel. Nobody is @mention
 - **time** can be written however you'd normally say it: `sept 28 @ 4 PM`, `tomorrow 8pm`, `friday at 7pm`.
   Everyone sees it in their own timezone.
 - **role** is the clearee's role. They're added to that slot automatically.
+- **job** is the clearee's job for that role, picked from the list as you type. Add more than one with
+  `/`, like `NIN/SAM`. It's **required** for MT/OT/M1/M2 and optional for H1/H2/R1/R2
+  (see the job list under [Signing up](#signing-up)).
 - The first time you use `/createrun`, fill in the optional **timezone** option (for example
   `America/New_York` or `EST`) so the bot knows what "4 PM" means for you. It remembers it after that.
   You can change it any time with `/settimezone`.

@@ -45,6 +45,16 @@ export const OPTIONAL_JOB_ROLES = ['H1', 'H2', 'R1', 'R2'];
 /** Every job that can be played in any of these roles. */
 export const jobsForRoles = (roles) => JOBS.filter((j) => roles.some((r) => ROLE_JOBS[r]?.includes(j)));
 
+/**
+ * Jobs typed for a role, e.g. "gnb/drk" or "NIN, SAM". `invalid` lists anything that isn't a job
+ * for that role.
+ */
+export function parseJobInput(role, text = '') {
+  const tokens = [...new Set(text.toUpperCase().split(/[\s,/]+/).filter(Boolean))];
+  const allowed = ROLE_JOBS[role] ?? [];
+  return { jobs: allowed.filter((j) => tokens.includes(j)), invalid: tokens.filter((t) => !allowed.includes(t)) };
+}
+
 /** Required job groups (tank/melee) that have a role picked but no job picked yet. */
 export function missingJobs(roles, jobs = []) {
   return REQUIRED_JOB_GROUPS
