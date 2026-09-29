@@ -1,16 +1,21 @@
-// Starts the bot and, with AUTO_UPDATE=true, checks GitHub for new commits every
-// UPDATE_CHECK_HOURS (default 24). If there are any, it pulls them, reinstalls packages if they
-// changed, and restarts the bot. If nothing changed, the bot keeps running untouched.
+// Starts the bot and, with AUTO_UPDATE=true, checks GitHub for new commits every day at
+// UPDATE_CHECK_TIME in UPDATE_CHECK_TIMEZONE (default 03:00 America/New_York). If there are any, it
+// pulls them, reinstalls packages if they changed, and restarts the bot. Otherwise nothing happens.
 import 'dotenv/config';
 import { exec, execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { DateTime } from 'luxon';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BOT_FILE = path.join(ROOT, 'src', 'index.js');
 const AUTO_UPDATE = /^(1|true|yes|on)$/i.test(process.env.AUTO_UPDATE ?? '');
-const CHECK_HOURS = Number(process.env.UPDATE_CHECK_HOURS) > 0 ? Number(process.env.UPDATE_CHECK_HOURS) : 24;
+const CHECK_ZONE = process.env.UPDATE_CHECK_TIMEZONE || 'America/New_York';
+const timeMatch = /^(\d{1,2}):(\d{2})$/.exec(process.env.UPDATE_CHECK_TIME ?? '');
+const [CHECK_HOUR, CHECK_MINUTE] = timeMatch && +timeMatch[1] < 24 && +timeMatch[2] < 60
+  ? [+timeMatch[1], +timeMatch[2]]
+  : [3, 0];
 
 const run = promisify(execFile);
 const sh = promisify(exec);
@@ -89,8 +94,23 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 }
 
 if (AUTO_UPDATE) {
-  log(`Auto-update is on. Checking GitHub now and every ${CHECK_HOURS} hour(s).`);
+  if (!DateTime.local().setZone(CHECK_ZONE).isValid) throw new Error(`Unknown UPDATE_CHECK_TIMEZONE: ${CHECK_ZONE}`);
+  const nextCheck = () => {
+    const now = DateTime.now().setZone(CHECK_ZONE);
+    let next = now.set({ hour: CHECK_HOUR, minute: CHECK_MINUTE, second: 0, millisecond: 0 });
+    if (next <= now) next = next.plus({ days: 1 });
+    return next;
+  };
+  const schedule = () => {
+    const next = nextCheck();
+    log(`Next GitHub check: ${next.toFormat('ccc LLL d, HH:mm ZZZZ')}.`);
+    setTimeout(async () => {
+      await checkAndRestart();
+      schedule();
+    }, next.toMillis() - Date.now());
+  };
+  log('Auto-update is on. Checking GitHub now.');
   await update();
-  setInterval(checkAndRestart, CHECK_HOURS * 60 * 60 * 1000);
+  schedule();
 }
 startBot();

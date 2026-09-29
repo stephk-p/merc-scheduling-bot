@@ -238,7 +238,8 @@ To run the tests: `npm test`
 ### Auto-update from GitHub
 
 `npm start` runs [src/launcher.js](src/launcher.js), which starts the bot. Set `AUTO_UPDATE=true` in `.env`
-and it checks GitHub when it starts and then every `UPDATE_CHECK_HOURS` (default 24):
+and it checks GitHub when it starts and then every day at **3:00 AM New York time**
+(change with `UPDATE_CHECK_TIME` and `UPDATE_CHECK_TIMEZONE`):
 
 - No new commits: nothing happens and the bot keeps running.
 - New commits: it pulls them, runs `npm install` if `package.json` changed, and restarts the bot.
@@ -249,26 +250,46 @@ If the update fails (for example because of local edits), it logs why and keeps 
 ### Hosting on Cybrancee
 
 Cybrancee runs bots through a Pterodactyl panel. Setting names can differ slightly.
+Follow these steps in order so the runs, sign-ups and saved timezones carry over.
 
-1. Create a **Node.js** bot server (Node 18 or newer).
-2. In the **Startup** tab:
+1. **Push your latest code to GitHub** so the server gets it.
+2. Create a **Node.js** bot server (Node 18 or newer).
+3. In the **Startup** tab:
    - **Git repo address**: `https://github.com/stephk-p/merc-scheduling-bot.git`
    - **Branch**: `main`
    - **User uploaded files**: off (so the panel clones the repo)
    - **Main file** (bot JS file): `src/launcher.js`
-3. If the server's files are empty, go to **Settings → Reinstall server** so it clones the repo.
-4. In **Files**, create a file called `.env` in the top folder with:
+4. Go to **Settings → Reinstall server** so it clones the repo. Don't start the server yet.
+   (Reinstalling can wipe files, so always do it *before* the next steps, never after.)
+5. **Stop the bot on your PC** (close its window). Two copies running on the same token would both
+   answer every button click, and your PC's `data/` would stop matching the server's.
+6. **Copy your `.env`**: in **Files**, click **New File**, name it `.env`, and paste in the contents of the
+   `.env` on your PC. Then add these lines and save:
    ```
-   DISCORD_TOKEN=your-token-here
-   GUILD_ID=all
    AUTO_UPDATE=true
-   UPDATE_CHECK_HOURS=24
+   UPDATE_CHECK_TIME=03:00
+   UPDATE_CHECK_TIMEZONE=America/New_York
    ```
-5. Start the server. The console shows `[updater] Auto-update is on...` and then `Logged in as ...`.
+7. **Copy your `data/` folder**: in **Files**, click **Create Directory** and name it `data`. Open it,
+   click **Upload**, and upload `runs.json` and `timezones.json` from the `data` folder on your PC.
+   You can also use SFTP instead (connection details are under **Settings → SFTP Details**,
+   use a program like WinSCP or FileZilla) and drag the whole `data` folder into the top folder.
+8. Start the server. The console shows `[updater] Auto-update is on...`, the next check time,
+   and then `Logged in as ...`. Check that `/managerun` lists your existing runs.
 
-After that, anything you push to `main` goes live within a day. To update right away, restart the
-server from the panel.
-Keep a copy of `data/` if you ever reinstall the server, since that's where the runs are saved.
+The top folder should end up looking like this:
+
+```
+.env
+data/runs.json
+data/timezones.json
+src/...
+package.json
+```
+
+After that, anything you push to `main` goes live at the next 3:00 AM check. To update right away,
+restart the server from the panel. Don't run the bot on your PC with the same token while the server
+is running. Download a copy of `data/` from the server now and then as a backup, and always before a reinstall.
 
 ### Something not working?
 
