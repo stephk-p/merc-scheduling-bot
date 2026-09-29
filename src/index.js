@@ -15,6 +15,7 @@ import {
   StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
+  UserSelectMenuBuilder,
   escapeMarkdown,
 } from 'discord.js';
 import { DateTime } from 'luxon';
@@ -63,9 +64,7 @@ function runCommand(name, description) {
     .addStringOption((o) =>
       o.setName('amount').setDescription('Amount (e.g. 5m, $20)').setRequired(true).setMaxLength(50))
     .addStringOption((o) =>
-      o.setName('text').setDescription('Custom text (e.g. "M4S clear")').setRequired(true).setMaxLength(300))
-    .addStringOption((o) =>
-      o.setName('time').setDescription('When, in your timezone (e.g. "sept 28 @ 4 PM")').setRequired(true).setMaxLength(100))
+      o.setName('merc_run_type').setDescription('Merc run type (e.g. "M4S clear")').setRequired(true).setMaxLength(300))
     .addStringOption((o) =>
       o.setName('clearee')
         .setDescription('Who the run is for: pick someone from the list, or type any name')
@@ -79,7 +78,24 @@ function runCommand(name, description) {
         .addChoices(...ROLES.map((r) => ({ name: r, value: r }))))
     .addStringOption((o) =>
       o.setName('job')
-        .setDescription("Clearee's job(s) for that role, e.g. GNB or NIN/SAM. Required for MT/OT/M1/M2")
+        .setDescription("Clearee's job(s) for that role, e.g. GNB or NIN/SAM")
+        .setRequired(true)
+        .setMaxLength(100)
+        .setAutocomplete(true))
+    .addStringOption((o) =>
+      o.setName('time').setDescription('When, in your timezone (e.g. "sept 28 @ 4 PM")').setRequired(true).setMaxLength(100))
+    .addStringOption((o) =>
+      o.setName('extra_clearee')
+        .setDescription('A second clearee (optional): pick someone from the list, or type any name')
+        .setMaxLength(100)
+        .setAutocomplete(true))
+    .addStringOption((o) =>
+      o.setName('extra_role')
+        .setDescription("Extra clearee's role slot")
+        .addChoices(...ROLES.map((r) => ({ name: r, value: r }))))
+    .addStringOption((o) =>
+      o.setName('extra_job')
+        .setDescription("Extra clearee's job(s). Required if their role is MT/OT/M1/M2")
         .setMaxLength(100)
         .setAutocomplete(true))
     .addStringOption((o) =>
@@ -93,7 +109,7 @@ const commands = [
   runCommand('createrun-test', '[Test] Create a run with a Merc Run ID and its own private channel'),
   new SlashCommandBuilder()
     .setName('managerun')
-    .setDescription('Mark a run completed or failed, reschedule it, or delete it')
+    .setDescription('Mark a run completed or failed, reschedule it, edit its roster, or delete it')
     .addStringOption((o) =>
       o.setName('run_id')
         .setDescription('The 6-digit Merc Run ID')
@@ -137,7 +153,7 @@ const STATUS_TEXT = {
 };
 
 // The picker's current selection is stored in the Confirm button's custom ID (max 100 chars):
-//   run:confirm:<messageId>:<roles>:<jobs>
+//   run:confirm:<messageId>:<roles>:<jobs>  or  edit:confirm:<messageId>:<userId>:<roles>:<jobs>
 // roles = one digit per pick, in pick order (index into ROLES + BENCH); jobs = base-36 bitmask of JOBS.
 const PICK_VALUES = [...ROLES, BENCH];
 const encodeValues = (values) => values.map((v) => PICK_VALUES.indexOf(v)).filter((i) => i >= 0).join('');
@@ -170,13 +186,14 @@ function jobMenu(customId, placeholder, options, jobs, minValues) {
 /**
  * Sign-up picker: role menu, then job menus for the picked roles, then Confirm.
  * At most 5 rows: roles, tank jobs, melee jobs, optional jobs, Confirm.
- * @param {string} messageId run post ID
+ * @param {'run'|'edit'} ns 'edit' when a run manager is picking for someone else
+ * @param {string} target run post ID, or "<messageId>:<userId>" for 'edit'
  * @param {Record<string,string>} status from roleStatus()
  * @param {string[]} selected currently selected values, in pick order
  * @param {string[]} jobs currently selected jobs
  * @param {boolean} canConfirm whether the selection is valid
  */
-function rolePicker(messageId, status, selected = [], jobs = [], canConfirm = false) {
+function rolePicker(ns, target, status, selected = [], jobs = [], canConfirm = false) {
   const picked = selected.filter((v) => v !== BENCH);
   const options = [
     ...ROLES.map((r) => {
@@ -197,7 +214,7 @@ function rolePicker(messageId, status, selected = [], jobs = [], canConfirm = fa
   ];
 
   const select = new StringSelectMenuBuilder()
-    .setCustomId(`run:select:${messageId}`)
+    .setCustomId(`${ns}:select:${target}`)
     .setPlaceholder('Choose one or more roles')
     .setMinValues(1)
     .setMaxValues(options.length)
@@ -210,7 +227,7 @@ function rolePicker(messageId, status, selected = [], jobs = [], canConfirm = fa
     const forRoles = picked.filter((r) => g.roles.includes(r)).join('/');
     if (!forRoles) continue;
     rows.push(jobMenu(
-      `run:jobs-${g.key}:${messageId}`,
+      `${ns}:jobs-${g.key}:${target}`,
       `Required: which ${g.label} jobs can you play? (${forRoles})`,
       g.jobs.map((job) => ({ job, forRoles })),
       jobs,
@@ -222,7 +239,7 @@ function rolePicker(messageId, status, selected = [], jobs = [], canConfirm = fa
   const optRoles = picked.filter((r) => OPTIONAL_JOB_ROLES.includes(r));
   if (optRoles.length) {
     rows.push(jobMenu(
-      `run:jobs-opt:${messageId}`,
+      `${ns}:jobs-opt:${target}`,
       `Optional: which jobs can you play? (${optRoles.join('/')})`,
       optRoles.flatMap((r) => ROLE_JOBS[r].map((job) => ({ job, forRoles: r }))),
       jobs,
@@ -232,12 +249,17 @@ function rolePicker(messageId, status, selected = [], jobs = [], canConfirm = fa
 
   const signup = selectionToSignup('', selected, jobs);
   const confirm = new ButtonBuilder()
-    .setCustomId(`run:confirm:${messageId}:${encodeValues(selected)}:${encodeJobs(signup.jobs)}`)
+    .setCustomId(`${ns}:confirm:${target}:${encodeValues(selected)}:${encodeJobs(signup.jobs)}`)
     .setLabel(canConfirm ? `Confirm: ${describeSignup(signup)}`.slice(0, 80) : 'Confirm')
     .setStyle(ButtonStyle.Primary)
     .setDisabled(!canConfirm);
 
-  rows.push(new ActionRowBuilder().addComponents(confirm));
+  const confirmRow = new ActionRowBuilder().addComponents(confirm);
+  if (ns === 'edit') {
+    confirmRow.addComponents(new ButtonBuilder().setCustomId(`edit:panel:${target.split(':')[0]}`)
+      .setLabel('Back').setStyle(ButtonStyle.Secondary));
+  }
+  rows.push(confirmRow);
   return rows;
 }
 
@@ -249,6 +271,8 @@ function manageButtons(messageId, run) {
       new ButtonBuilder().setCustomId(`manage:fail:${messageId}`).setLabel('Failed').setEmoji('❌')
         .setStyle(ButtonStyle.Danger).setDisabled(run.status === 'failed'),
       new ButtonBuilder().setCustomId(`manage:reschedule:${messageId}`).setLabel('Reschedule').setEmoji('🕒')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`manage:edit:${messageId}`).setLabel('Edit roster').setEmoji('📝')
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`manage:delete:${messageId}`).setLabel('Delete run').setEmoji('🗑️')
         .setStyle(ButtonStyle.Secondary),
@@ -320,8 +344,11 @@ function pingFor(guildId) {
 // The clearee is shown by name in the run post instead of being @mentioned. `cleareeKey` is the
 // ID used for their roster slot: their user ID, or a placeholder if they aren't a server member.
 function labelsFor(run) {
+  const labels = {};
   const key = run.cleareeKey ?? run.cleareeId;
-  return key && run.cleareeName ? { [key]: run.cleareeName } : {};
+  if (key && run.cleareeName) labels[key] = run.cleareeName;
+  if (run.extraCleareeKey && run.extraCleareeName) labels[run.extraCleareeKey] = run.extraCleareeName;
+  return labels;
 }
 
 const render = (run, signups = run.signups) =>
@@ -331,7 +358,8 @@ const isUserId = (id) => /^\d{15,21}$/.test(id ?? '');
 
 /** Everyone who should be able to see a run's private channel (real Discord users only). */
 function channelMembers(run) {
-  return [...new Set([run.creatorId, run.cleareeId, ...run.signups.map((s) => s.userId)].filter(isUserId))];
+  return [...new Set([run.creatorId, run.cleareeId, run.extraCleareeId, ...run.signups.map((s) => s.userId)]
+    .filter(isUserId))];
 }
 
 // ---------------------------------------------------------------------------
@@ -369,9 +397,9 @@ async function autocompleteClearee(interaction, query) {
     });
 }
 
-// Suggests jobs for the picked role. Several can be chained with "/", e.g. "GNB/" suggests "GNB/DRK".
-function autocompleteJobs(interaction, query) {
-  const pool = ROLE_JOBS[interaction.options.getString('role')] ?? JOBS;
+// Suggests jobs for the role in `roleOption`. Several can be chained with "/", e.g. "GNB/" suggests "GNB/DRK".
+function autocompleteJobs(interaction, query, roleOption) {
+  const pool = ROLE_JOBS[interaction.options.getString(roleOption)] ?? JOBS;
   const parts = query.toUpperCase().split(/[\s,/]+/);
   const partial = parts.pop();
   const picked = pool.filter((j) => parts.includes(j));
@@ -411,6 +439,8 @@ function canManage(interaction, run) {
   return interaction.user.id === run.creatorId ||
     Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels));
 }
+
+const NOT_MANAGER = 'Only the person who created this run, or someone with Manage Channels, can manage it.';
 
 // ---------------------------------------------------------------------------
 // Channel names
@@ -479,7 +509,7 @@ async function addToPrivateChannel(run, userId) {
 
 /** Remove a user from the run's private channel. The creator and clearee always keep access. No message is posted. */
 async function removeFromPrivateChannel(run, userId) {
-  if (userId === run.creatorId || userId === run.cleareeId) return;
+  if ([run.creatorId, run.cleareeId, run.extraCleareeId].includes(userId)) return;
   try {
     const channel = await fetchPrivateChannel(run);
     if (!channel) return;
@@ -537,38 +567,97 @@ async function sweepChannels() {
         if (![10003, 50001].includes(err.code)) throw err;
       }
       if (channel) await channel.delete(`Merc run ${run.runId} completed`);
-      setRun(messageId, { ...run, privateChannelId: null, channelDeleteAt: null });
-      console.log(`Deleted the private channel for completed run ${run.runId}.`);
+      deleteRun(messageId);
+      console.log(`Deleted the private channel for completed run ${run.runId} and forgot the run.`);
     }).catch((err) => console.error(`Couldn't delete the channel for run ${pending.runId}:`, err.message));
+  }
+}
+
+/** Forget a run whose private channel was deleted (by the bot, by hand, or while the bot was offline). */
+function forgetRunForChannel(channelId) {
+  for (const [messageId, run] of allRuns()) {
+    if (run.privateChannelId !== channelId) continue;
+    withLock(messageId, async () => {
+      deleteRun(messageId);
+      console.log(`The private channel for run ${run.runId} was deleted, so the run was forgotten.`);
+    }).catch((err) => console.error(`Couldn't forget run ${run.runId}:`, err.message));
+  }
+}
+
+// On startup: forget completed runs without a channel, and runs whose channel is already gone.
+async function pruneRuns() {
+  for (const [messageId, run] of allRuns()) {
+    if (!run.privateChannelId) {
+      if (run.status === 'completed') deleteRun(messageId);
+      continue;
+    }
+    try {
+      await client.channels.fetch(run.privateChannelId);
+    } catch (err) {
+      if (err.code === 10003) forgetRunForChannel(run.privateChannelId); // Unknown Channel
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
 // Slash command handlers
 // ---------------------------------------------------------------------------
+/** Validate typed jobs for a role. Returns { jobs } or { error }. */
+function checkJobInput(role, input, option, required) {
+  const { jobs, invalid } = parseJobInput(role, input);
+  if (invalid.length) {
+    return { error: `Not a ${role} job in **${option}**: **${escapeMarkdown(invalid.join(', '))}**. ` +
+      `Pick from ${ROLE_JOBS[role].join('/')}.` };
+  }
+  if (required && !jobs.length) {
+    return { error: `The **${option}** option is required for ${role}. Pick from ${ROLE_JOBS[role].join('/')}.` };
+  }
+  return { jobs };
+}
+
+/** The clearee as a server member if the text matches one, otherwise just the typed name. */
+async function resolveClearee(guild, input, fallbackKey) {
+  const member = await findClearee(guild, input);
+  const name = member
+    ? escapeMarkdown(member.displayName)
+    : escapeMarkdown(noMassPing(input.trim().replace(/^@/, ''))) || 'clearee';
+  return { member, name, key: member?.id ?? fallbackKey };
+}
+
+const cleareeLabel = (name, jobs, role) => `${name} ` + (jobs.length ? `(${jobs.join('/')}) - ${role}` : role);
+
 async function handleCreateRun(interaction, { test = false } = {}) {
   const amount = noMassPing(interaction.options.getString('amount', true));
-  const text = noMassPing(interaction.options.getString('text', true));
+  const text = noMassPing(interaction.options.getString('merc_run_type', true));
   const timeInput = interaction.options.getString('time', true);
   const cleareeInput = interaction.options.getString('clearee', true);
   const role = interaction.options.getString('role', true);
-  const jobInput = interaction.options.getString('job') ?? '';
+  const jobInput = interaction.options.getString('job', true);
+  const extraInput = interaction.options.getString('extra_clearee')?.trim() ?? '';
+  const extraRole = interaction.options.getString('extra_role');
+  const extraJobInput = interaction.options.getString('extra_job') ?? '';
   const tzInput = interaction.options.getString('timezone');
 
   if (!interaction.inGuild()) {
     return interaction.reply(ephemeral('This command only works in a server.'));
   }
 
-  const { jobs, invalid } = parseJobInput(role, jobInput);
-  if (invalid.length) {
-    return interaction.reply(ephemeral(
-      `Not a ${role} job: **${escapeMarkdown(invalid.join(', '))}**. Pick from ${ROLE_JOBS[role].join('/')}.`,
-    ));
-  }
-  if (missingJobs([role], jobs).length) {
-    return interaction.reply(ephemeral(
-      `The **job** option is required for ${role}. Pick the clearee's job(s) from ${ROLE_JOBS[role].join('/')}.`,
-    ));
+  const main = checkJobInput(role, jobInput, 'job', true);
+  if (main.error) return interaction.reply(ephemeral(main.error));
+  const { jobs } = main;
+
+  const hasExtra = Boolean(extraInput || extraRole || extraJobInput.trim());
+  let extraJobs = [];
+  if (hasExtra) {
+    if (!extraInput || !extraRole) {
+      return interaction.reply(ephemeral('To add an extra clearee, fill in both **extra_clearee** and **extra_role**.'));
+    }
+    if (extraRole === role) {
+      return interaction.reply(ephemeral(`Both clearees can't have the **${role}** slot. Pick a different **extra_role**.`));
+    }
+    const extra = checkJobInput(extraRole, extraJobInput, 'extra_job', missingJobs([extraRole], []).length > 0);
+    if (extra.error) return interaction.reply(ephemeral(extra.error));
+    extraJobs = extra.jobs;
   }
 
   const me = interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
@@ -593,25 +682,31 @@ async function handleCreateRun(interaction, { test = false } = {}) {
   // notifies people (mentions added by editing a message don't).
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  // The clearee doesn't have to be a server member. If the text matches one, they get the slot
+  // Clearees don't have to be server members. If the text matches one, they get the slot
   // and are added to the private channel; otherwise the text is just shown as their name.
-  const cleareeMember = await findClearee(interaction.guild, cleareeInput);
   const runId = newRunId();
-  const cleareeName = cleareeMember
-    ? escapeMarkdown(cleareeMember.displayName)
-    : escapeMarkdown(noMassPing(cleareeInput.trim().replace(/^@/, ''))) || 'clearee';
-  const cleareeKey = cleareeMember?.id ?? `clearee-${runId}`;
+  const clearee = await resolveClearee(interaction.guild, cleareeInput, `clearee-${runId}`);
+  const extra = hasExtra ? await resolveClearee(interaction.guild, extraInput, `clearee2-${runId}`) : null;
+  if (extra?.member && extra.member.id === clearee.member?.id) {
+    return interaction.editReply('The extra clearee is the same person as the clearee. Pick someone else.');
+  }
+  const cleareeMember = clearee.member;
+  const cleareeName = clearee.name;
+  const cleareeKey = clearee.key;
 
-  // The clearee is named, not @mentioned, in the channel the run is posted in.
-  const header = `${amount} ${text} <t:${parsed.ts}:f> for ${cleareeName} ` +
-    (jobs.length ? `${jobs.join('/')} - ${role}` : role);
+  // Clearees are named, not @mentioned, in the channel the run is posted in.
+  const who = cleareeLabel(cleareeName, jobs, role) + (extra ? ` & ${cleareeLabel(extra.name, extraJobs, extraRole)}` : '');
+  const header = `${amount} ${text} for ${who} @ <t:${parsed.ts}:f>`;
   const ping = pingFor(interaction.guildId);
   const run = {
     header,
     ping: ping.text,
     title: `${amount} ${text}`,
     startsAt: parsed.ts,
-    signups: [{ userId: cleareeKey, mode: 'firm', roles: [role], jobs }],
+    signups: [
+      { userId: cleareeKey, mode: 'firm', roles: [role], jobs },
+      ...(extra ? [{ userId: extra.key, mode: 'firm', roles: [extraRole], jobs: extraJobs }] : []),
+    ],
     placed: {},
     status: 'open',
     runId,
@@ -624,6 +719,9 @@ async function handleCreateRun(interaction, { test = false } = {}) {
     cleareeId: cleareeMember?.id ?? null,
     cleareeKey,
     cleareeName,
+    extraCleareeId: extra?.member?.id ?? null,
+    extraCleareeKey: extra?.key ?? null,
+    extraCleareeName: extra?.name ?? null,
   };
 
   // /createrun-test: merc-run-<id>. /createrun: amount, text and day, e.g. 5m-m4s-clear-sep-28.
@@ -680,6 +778,9 @@ async function handleCreateRun(interaction, { test = false } = {}) {
   if (!cleareeMember) {
     done += `\nNo server member matched "${cleareeName}", so the clearee is shown by name only and wasn't added to the channel.`;
   }
+  if (extra && !extra.member) {
+    done += `\nNo server member matched "${extra.name}", so the extra clearee is shown by name only and wasn't added to the channel.`;
+  }
   await interaction.editReply({ content: done, allowedMentions: { parse: [] } });
 }
 
@@ -717,7 +818,7 @@ async function handleManageRun(interaction) {
   const found = findRunById(interaction.guildId, runId);
   if (!found) return interaction.reply(ephemeral(`There's no run with Merc Run ID **${runId}** in this server.`));
   if (!canManage(interaction, found.run)) {
-    return interaction.reply(ephemeral('Only the person who created this run, or someone with Manage Channels, can manage it.'));
+    return interaction.reply(ephemeral(NOT_MANAGER));
   }
 
   return interaction.reply({
@@ -758,13 +859,15 @@ async function closeRun(interaction, messageId, status) {
       ? Date.now() + CHANNEL_DELETE_DELAY_MS
       : null;
     const postExists = await updatePost(messageId, run);
-    setRun(messageId, run);
+    // A completed run with no channel left to clean up is forgotten right away.
+    if (status === 'completed' && !run.privateChannelId) deleteRun(messageId);
+    else setRun(messageId, run);
 
     // The private channel only has the roster copy, which updatePost() already refreshed.
     const deleteAt = run.channelDeleteAt ? Math.floor(run.channelDeleteAt / 1000) : null;
     let reply;
     if (status === 'completed') {
-      reply = `Run **${run.runId}** marked as completed.` +
+      reply = `Run **${run.runId}** marked as completed and removed from /managerun.` +
         (deleteAt ? ` Its private channel will be deleted <t:${deleteAt}:R>.` : '');
     } else {
       reply = `Run **${run.runId}** marked as failed. Sign-ups are closed until it's rescheduled.`;
@@ -796,7 +899,7 @@ async function handleManageButton(interaction, action, messageId) {
   const run = getRun(messageId);
   if (!run) return interaction.update({ content: 'That run no longer exists.', components: [] });
   if (!canManage(interaction, run)) {
-    return interaction.reply(ephemeral('Only the person who created this run, or someone with Manage Channels, can manage it.'));
+    return interaction.reply(ephemeral(NOT_MANAGER));
   }
 
   switch (action) {
@@ -806,6 +909,8 @@ async function handleManageButton(interaction, action, messageId) {
       return closeRun(interaction, messageId, 'failed');
     case 'reschedule':
       return interaction.showModal(rescheduleModal(messageId, run));
+    case 'edit':
+      return interaction.update(await editPanel(interaction, messageId, run));
     case 'delete':
       return interaction.update({
         content: `Delete run **${run.runId}**? This removes the run post and its private channel, and can't be undone.`,
@@ -831,7 +936,7 @@ async function handleRescheduleSubmit(interaction, messageId) {
   const existing = getRun(messageId);
   if (!existing) return interaction.reply(ephemeral('That run no longer exists.'));
   if (!canManage(interaction, existing)) {
-    return interaction.reply(ephemeral('Only the person who created this run, or someone with Manage Channels, can manage it.'));
+    return interaction.reply(ephemeral(NOT_MANAGER));
   }
 
   const input = interaction.fields.getTextInputValue('time');
@@ -870,7 +975,8 @@ function autocompleteRuns(interaction, query) {
   const zone = getUserZone(interaction.user.id) ?? 'UTC';
   return allRuns()
     .map(([, run]) => run)
-    .filter((run) => run.runId && run.guildId === interaction.guildId && canManage(interaction, run))
+    .filter((run) => run.runId && run.guildId === interaction.guildId && run.status !== 'completed' &&
+      canManage(interaction, run))
     .filter((run) => !q || run.runId.startsWith(q) || (run.title ?? '').toLowerCase().includes(q))
     .sort((a, b) => (b.startsAt ?? 0) - (a.startsAt ?? 0))
     .slice(0, 25)
@@ -912,8 +1018,8 @@ const selectionValues = (s) => (s.mode === 'bench' ? [...s.roles, BENCH] : [...s
 function previousPicks(message) {
   for (const row of message?.components ?? []) {
     for (const c of row.components ?? []) {
-      if (c.customId?.startsWith('run:confirm:')) {
-        const [, , , values, jobs] = c.customId.split(':');
+      if (/^(run|edit):confirm:/.test(c.customId ?? '')) {
+        const [values, jobs] = c.customId.split(':').slice(-2);
         return { values: decodeValues(values), jobs: decodeJobs(jobs) };
       }
     }
@@ -934,10 +1040,13 @@ function checkSelection(signup) {
 const closedMessage = (run) =>
   `This run is marked **${statusText(run).toLowerCase()}**, so sign-ups are closed.`;
 
-/** What happened (or, with preview, what would happen) to a sign-up. */
-function outcomeText(signup, rendered, preview = false) {
+/** What happened (or, with preview, what would happen) to a sign-up. `who` names someone else. */
+function outcomeText(signup, rendered, preview = false, who = null) {
   const p = placementOf(signup, rendered);
-  const you = preview ? "You'll be" : "✅ You're";
+  const you = who
+    ? (preview ? `${who} will be` : `✅ ${who} is`)
+    : (preview ? "You'll be" : "✅ You're");
+  const [they, their] = who ? ['they', 'their'] : ['you', 'your'];
   if (p.bench) {
     return signup.roles.length
       ? `${you} on the bench as a backup for **${signup.roles.join('/')}**.`
@@ -947,11 +1056,12 @@ function outcomeText(signup, rendered, preview = false) {
     const held = signup.roles.length === 1
       ? `**${signup.roles[0]}** is held by someone who signed up earlier`
       : `**${signup.roles.join('/')}** are all held by people who signed up earlier`;
-    return `${you} on the **Waitlist**: ${held}. You'll be moved in automatically if a slot opens up.`;
+    return `${you} on the **Waitlist**: ${held}. ${they === 'you' ? 'You' : 'They'}'ll be moved in ` +
+      'automatically if a slot opens up.';
   }
   if (p.movable) {
     return `${you} in **${p.role}** for now. If someone picks ${p.role} as their only role, ` +
-      "you'll move to another of your roles.";
+      `${they}'ll move to another of ${their} roles.`;
   }
   return `${you} in **${p.role}**.`;
 }
@@ -975,13 +1085,18 @@ async function handleJoin(interaction) {
 
   return interaction.reply({
     content: current + PICK_HELP,
-    components: rolePicker(post.id, status, mine ? selectionValues(mine) : [], mine?.jobs ?? []),
+    components: rolePicker('run', post.id, status, mine ? selectionValues(mine) : [], mine?.jobs ?? []),
     flags: MessageFlags.Ephemeral,
   });
 }
 
-async function handleSelect(interaction, messageId, kind) {
-  if (!hasRuleRole(interaction, 'signupRoles')) {
+/** `targetId` is set when a run manager is editing someone else's pick from /managerun. */
+async function handleSelect(interaction, messageId, kind, targetId = null) {
+  if (targetId) {
+    const saved = getRun(messageId);
+    if (!saved) return interaction.update({ content: 'That run no longer exists.', components: [] });
+    if (!canManage(interaction, saved)) return interaction.update({ content: NOT_MANAGER, components: [] });
+  } else if (!hasRuleRole(interaction, 'signupRoles')) {
     return interaction.update({ content: needRoleText(interaction, 'signupRoles', 'sign up for runs'), components: [] });
   }
   // Discord only sends the values of the menu that changed. The rest of the selection is kept in
@@ -999,28 +1114,40 @@ async function handleSelect(interaction, messageId, kind) {
     jobs = [...jobs.filter((j) => !menuJobs.includes(j)), ...interaction.values];
   }
 
-  const post = await fetchPost(interaction, messageId);
-  if (!post) {
-    deleteRun(messageId);
-    return interaction.update({ content: 'That run post no longer exists.', components: [] });
+  let run = targetId ? getRun(messageId) : null;
+  if (!run) {
+    const post = await fetchPost(interaction, messageId);
+    if (!post) {
+      deleteRun(messageId);
+      return interaction.update({ content: 'That run post no longer exists.', components: [] });
+    }
+    run = runFromPost(post);
+    if (isClosed(run)) return interaction.update({ content: closedMessage(run), components: [] });
   }
 
-  const run = runFromPost(post);
-  if (isClosed(run)) return interaction.update({ content: closedMessage(run), components: [] });
-
-  const { others, status } = viewFor(run, interaction.user.id);
-  const signup = selectionToSignup(interaction.user.id, values, jobs);
+  const userId = targetId ?? interaction.user.id;
+  const who = targetId ? `<@${targetId}>` : null;
+  const { others, status } = viewFor(run, userId);
+  const signup = selectionToSignup(userId, values, jobs);
   const preview = render(run, [...others, signup]);
   const check = checkSelection(signup);
 
-  const lines = [outcomeText(signup, preview, true)];
+  const lines = [outcomeText(signup, preview, true, who)];
   if (signup.jobs.length) lines.push(`Jobs: **${describeJobs(signup)}**`);
-  if (check.ok) lines.push(`Press **Confirm** to sign up as **${describeSignup(signup)}**.`);
-  else lines.push(...check.problems);
+  if (check.ok) {
+    lines.push(who
+      ? `Press **Confirm** to save ${who} as **${describeSignup(signup)}**.`
+      : `Press **Confirm** to sign up as **${describeSignup(signup)}**.`);
+  } else {
+    lines.push(...check.problems);
+  }
 
   return interaction.update({
     content: lines.join('\n'),
-    components: rolePicker(messageId, status, values, signup.jobs, check.ok),
+    components: targetId
+      ? rolePicker('edit', `${messageId}:${targetId}`, status, values, signup.jobs, check.ok)
+      : rolePicker('run', messageId, status, values, signup.jobs, check.ok),
+    allowedMentions: { parse: [] },
   });
 }
 
@@ -1091,6 +1218,120 @@ async function handleLeave(interaction) {
 }
 
 // ---------------------------------------------------------------------------
+// /managerun: Edit roster
+// ---------------------------------------------------------------------------
+async function editPanel(interaction, messageId, run, note = '') {
+  const labels = labelsFor(run);
+  const ids = run.signups.map((s) => s.userId).filter((id) => !labels[id] && isUserId(id));
+  const members = ids.length ? await interaction.guild.members.fetch({ user: ids }).catch(() => null) : null;
+  const nameOf = (id) => labels[id] ?? members?.get(id)?.displayName ?? id;
+
+  const rows = [
+    new ActionRowBuilder().addComponents(
+      new UserSelectMenuBuilder().setCustomId(`edit:add:${messageId}`)
+        .setPlaceholder("Add someone, or change someone's pick"),
+    ),
+  ];
+  if (run.signups.length) {
+    const options = run.signups.slice(0, 25).map((s) => ({
+      label: nameOf(s.userId).slice(0, 100),
+      value: s.userId,
+      description: (describeSignup(s) + (s.jobs?.length ? ` (${describeJobs(s)})` : '')).slice(0, 100),
+    }));
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder().setCustomId(`edit:remove:${messageId}`)
+        .setPlaceholder('Remove people from the roster')
+        .setMinValues(1)
+        .setMaxValues(options.length)
+        .addOptions(options),
+    ));
+  }
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`manage:cancel:${messageId}`).setLabel('Back').setStyle(ButtonStyle.Secondary),
+  ));
+
+  const intro = `**Editing the roster for run ${run.runId}.** Add someone (or change their pick) with the ` +
+    'first menu, or remove people with the second. Slots, flex moves and the waitlist update like normal sign-ups.';
+  const content = [note, intro, '', rosterCopyContent(run, render(run).content)].filter((l, i) => i || l).join('\n');
+  return { content: content.slice(0, 2000), components: rows, allowedMentions: { parse: [] } };
+}
+
+async function handleEditAdd(interaction, messageId) {
+  const run = getRun(messageId);
+  if (!run) return interaction.update({ content: 'That run no longer exists.', components: [] });
+  if (!canManage(interaction, run)) return interaction.update({ content: NOT_MANAGER, components: [] });
+
+  const userId = interaction.values[0];
+  if (interaction.users.get(userId)?.bot) {
+    return interaction.update(await editPanel(interaction, messageId, run, "⚠️ Bots can't be added to the roster."));
+  }
+  const mine = run.signups.find((s) => s.userId === userId);
+  const { status } = viewFor(run, userId);
+  const intro = mine
+    ? `<@${userId}> is signed up as **${describeSignup(mine)}**` +
+      (mine.jobs?.length ? ` (${describeJobs(mine)})` : '') +
+      '. Saving a new pick replaces that and puts them at the back of the line.'
+    : `Pick the role(s) and jobs for <@${userId}>.`;
+  return interaction.update({
+    content: intro,
+    components: rolePicker('edit', `${messageId}:${userId}`, status,
+      mine ? selectionValues(mine) : [], mine?.jobs ?? [], mine ? checkSelection(mine).ok : false),
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handleEditConfirm(interaction, messageId, userId, encodedValues, encodedJobs) {
+  await interaction.deferUpdate();
+  return withLock(messageId, async () => {
+    const run = getRun(messageId);
+    if (!run) return interaction.editReply({ content: 'That run no longer exists.', components: [] });
+    if (!canManage(interaction, run)) return interaction.editReply({ content: NOT_MANAGER, components: [] });
+
+    const signup = selectionToSignup(userId, decodeValues(encodedValues), decodeJobs(encodedJobs));
+    const check = checkSelection(signup);
+    if (!check.ok) return interaction.editReply({ content: check.problems.join('\n'), components: [] });
+
+    // Same as a normal sign-up: a new or changed pick goes to the back of the line.
+    const isNew = !run.signups.some((s) => s.userId === userId);
+    const signups = [...run.signups.filter((s) => s.userId !== userId), signup];
+    const rendered = render(run, signups);
+    if (rendered.content.length > 2000) {
+      return interaction.editReply(await editPanel(interaction, messageId, run,
+        "⚠️ This run post is full and can't fit more sign-ups."));
+    }
+
+    run.signups = signups;
+    await updatePost(messageId, run);
+    setRun(messageId, run);
+    if (isNew) await addToPrivateChannel(run, userId);
+    return interaction.editReply(await editPanel(interaction, messageId, run,
+      outcomeText(signup, rendered, false, `<@${userId}>`)));
+  });
+}
+
+async function handleEditRemove(interaction, messageId) {
+  await interaction.deferUpdate();
+  return withLock(messageId, async () => {
+    const run = getRun(messageId);
+    if (!run) return interaction.editReply({ content: 'That run no longer exists.', components: [] });
+    if (!canManage(interaction, run)) return interaction.editReply({ content: NOT_MANAGER, components: [] });
+
+    const removed = run.signups.filter((s) => interaction.values.includes(s.userId));
+    if (!removed.length) {
+      return interaction.editReply(await editPanel(interaction, messageId, run, 'Nobody was removed.'));
+    }
+    run.signups = run.signups.filter((s) => !removed.includes(s));
+    await updatePost(messageId, run);
+    setRun(messageId, run);
+    for (const s of removed) await removeFromPrivateChannel(run, s.userId);
+
+    const labels = labelsFor(run);
+    const names = removed.map((s) => labels[s.userId] ?? `<@${s.userId}>`).join(', ');
+    return interaction.editReply(await editPanel(interaction, messageId, run, `✅ Removed ${names}.`));
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -1149,8 +1390,11 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}. In ${c.guilds.cache.size} server(s).`);
   await registerCommands(c);
   await sweepChannels();
+  await pruneRuns();
   setInterval(sweepChannels, 60 * 1000);
 });
+
+client.on(Events.ChannelDelete, (channel) => forgetRunForChannel(channel.id));
 
 // Register right away when the bot is added to a new server (per-server modes only).
 client.on(Events.GuildCreate, async (guild) => {
@@ -1163,8 +1407,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isAutocomplete()) {
       const focused = interaction.options.getFocused(true);
       if (focused.name === 'run_id') return await interaction.respond(autocompleteRuns(interaction, focused.value));
-      if (focused.name === 'clearee') return await interaction.respond(await autocompleteClearee(interaction, focused.value));
-      if (focused.name === 'job') return await interaction.respond(autocompleteJobs(interaction, focused.value));
+      if (focused.name === 'clearee' || focused.name === 'extra_clearee') {
+        return await interaction.respond(await autocompleteClearee(interaction, focused.value));
+      }
+      if (focused.name === 'job') return await interaction.respond(autocompleteJobs(interaction, focused.value, 'role'));
+      if (focused.name === 'extra_job') {
+        return await interaction.respond(autocompleteJobs(interaction, focused.value, 'extra_role'));
+      }
       return await interaction.respond(autocompleteZones(focused.value));
     }
 
@@ -1184,6 +1433,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
 
     if (interaction.isButton()) {
+      if (interaction.customId.startsWith('edit:')) {
+        const [, action, messageId, userId, picks, jobs] = interaction.customId.split(':');
+        if (action === 'confirm') return await handleEditConfirm(interaction, messageId, userId, picks, jobs);
+        if (action === 'panel') {
+          const run = getRun(messageId);
+          if (!run) return await interaction.update({ content: 'That run no longer exists.', components: [] });
+          if (!canManage(interaction, run)) return await interaction.update({ content: NOT_MANAGER, components: [] });
+          return await interaction.update(await editPanel(interaction, messageId, run));
+        }
+        return;
+      }
       const [ns, action, messageId, picks, jobs] = interaction.customId.split(':');
       if (ns === 'manage') return await handleManageButton(interaction, action, messageId);
       if (ns !== 'run') return;
@@ -1193,8 +1453,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.isStringSelectMenu()) {
+    if (interaction.isUserSelectMenu()) {
       const [ns, action, messageId] = interaction.customId.split(':');
+      if (ns === 'edit' && action === 'add') return await handleEditAdd(interaction, messageId);
+      return;
+    }
+
+    if (interaction.isStringSelectMenu()) {
+      const [ns, action, messageId, userId] = interaction.customId.split(':');
+      if (ns === 'edit' && action === 'remove') return await handleEditRemove(interaction, messageId);
+      if (ns === 'edit' && ['select', 'jobs-tank', 'jobs-melee', 'jobs-opt'].includes(action)) {
+        return await handleSelect(interaction, messageId, action, userId);
+      }
       if (ns === 'run' && ['select', 'jobs-tank', 'jobs-melee', 'jobs-opt'].includes(action)) {
         return await handleSelect(interaction, messageId, action);
       }

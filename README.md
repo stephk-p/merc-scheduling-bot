@@ -15,14 +15,14 @@ By using the bot you agree to the [Terms of Service](TERMS_OF_SERVICE.md) and
 ## Creating a run
 
 ```
-/createrun amount text time clearee role job
+/createrun amount merc_run_type clearee role job time [extra_clearee extra_role extra_job]
 ```
 
-For example, `/createrun amount:5m text:M4S clear time:sept 28 @ 4 PM clearee:Steph role:M1 job:NIN/SAM` posts:
+For example, `/createrun amount:5m merc_run_type:M4S clear clearee:Steph role:M1 job:NIN/SAM time:sept 28 @ 4 PM` posts:
 
 ```
 @here
-5m M4S clear Sunday, September 28, 2026 4:00 PM for Steph NIN/SAM - M1
+5m M4S clear for Steph (NIN/SAM) - M1 @ Sunday, September 28, 2026 4:00 PM
 
 MT -
 OT -
@@ -37,7 +37,7 @@ R2 -
 The post pings `@here` on the first line (some servers ping a role instead, see [Role restrictions](#role-restrictions)).
 The ping only goes out when the run is posted, not when people sign up or the post is updated.
 
-It also creates a private channel called `5m-m4s-clear-sep-28` (amount, text and the day of the run)
+It also creates a private channel called `5m-m4s-clear-sep-28` (amount, merc run type and the day of the run)
 in the same category. Only you, the clearee and the people who sign up can see it.
 People are added when they sign up and removed if they leave.
 
@@ -54,8 +54,11 @@ That roster is the only message the bot posts in the channel. Nobody is @mention
   Everyone sees it in their own timezone.
 - **role** is the clearee's role. They're added to that slot automatically.
 - **job** is the clearee's job for that role, picked from the list as you type. Add more than one with
-  `/`, like `NIN/SAM`. It's **required** for MT/OT/M1/M2 and optional for H1/H2/R1/R2
-  (see the job list under [Signing up](#signing-up)).
+  `/`, like `NIN/SAM`. It's **required** (see the job list under [Signing up](#signing-up)).
+- **extra_clearee**, **extra_role** and **extra_job** (optional) add a second clearee to the roster.
+  Fill in both `extra_clearee` and `extra_role`; `extra_job` is required if `extra_role` is MT/OT/M1/M2
+  and optional otherwise. The post then reads like
+  `5m M4S clear for Steph (NIN/SAM) - M1 & Alex (WHM) - H1 @ Sunday, September 28, 2026 4:00 PM`.
 - The first time you use `/createrun`, fill in the optional **timezone** option (for example
   `America/New_York` or `EST`) so the bot knows what "4 PM" means for you. It remembers it after that.
   You can change it any time with `/settimezone`.
@@ -127,7 +130,7 @@ If User 3 leaves, User 1 moves back to R1 (a higher choice than R2) and User 4 g
   ```
   @here
   Merc Run ID: 482915
-  5m M4S clear Sunday, September 28, 2026 4:00 PM for Steph M1
+  5m M4S clear for Steph (NIN/SAM) - M1 @ Sunday, September 28, 2026 4:00 PM
   ...
   ```
 - The private channel is called `merc-run-482915` instead.
@@ -145,10 +148,13 @@ You can start typing the ID or the run name and pick it from the list. You get t
 
 | Button | What happens |
 |---|---|
-| **Completed** | The post is marked completed and sign-ups close. The private channel is deleted 3 hours later. |
+| **Completed** | The post is marked completed and sign-ups close. The run disappears from the `/managerun` list, and the private channel is deleted 3 hours later. |
 | **Failed** | The post is marked failed and sign-ups close. The channel stays so you can plan a retry. |
 | **Reschedule** | Enter a new time. The post is updated and sign-ups reopen. `/createrun` channels are renamed to the new day. |
+| **Edit roster** | Add someone (pick them, then their roles and jobs like a normal sign-up), change someone's pick, or remove people. Flex moves, the waitlist and the private channel update just like normal sign-ups and leaves. |
 | **Delete run** | Deletes the post and the channel right away (asks you to confirm first). |
+
+If a run's private channel is deleted, whether by the bot or by hand, the run is removed from `/managerun` too.
 
 Only the person who created the run, or anyone with the Manage Channels permission, can use `/managerun` on it.
 
@@ -172,7 +178,7 @@ Servers that aren't listed have no restrictions.
 |---|---|
 | `/createrun` | Post a new run and create its private channel |
 | `/createrun-test` | Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
-| `/managerun` | Mark a run completed or failed, reschedule it, or delete it |
+| `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
 | `/settimezone` | Save or change your timezone |
 
 ---
