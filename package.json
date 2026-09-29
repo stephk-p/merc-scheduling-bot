@@ -6,9 +6,10 @@
   "author": "StephK",
   "private": true,
   "type": "module",
-  "main": "src/index.js",
+  "main": "src/launcher.js",
   "scripts": {
-    "start": "node src/index.js",
+    "start": "node src/launcher.js",
+    "start:bot": "node src/index.js",
     "test": "node test/roster.test.js"
   },
   "engines": {

@@ -59,6 +59,8 @@ That roster is the only message the bot posts in the channel. Nobody is @mention
   Fill in both `extra_clearee` and `extra_role`; `extra_job` is required if `extra_role` is MT/OT/M1/M2
   and optional otherwise. The post then reads like
   `5m M4S clear for Steph (NIN/SAM) - M1 & Alex (WHM) - H1 @ Sunday, September 28, 2026 4:00 PM`.
+  If the extra clearee matches a server member who can see the channel the run is posted in, they're
+  @mentioned (and pinged) instead of named. Either way, a matching member is added to the private channel.
 - The first time you use `/createrun`, fill in the optional **timezone** option (for example
   `America/New_York` or `EST`) so the bot knows what "4 PM" means for you. It remembers it after that.
   You can change it any time with `/settimezone`.
@@ -124,6 +126,8 @@ If User 3 leaves, User 1 moves back to R1 (a higher choice than R2) and User 4 g
 
 ## Test runs and managing runs
 
+> `/createrun-test` is currently disabled. Test runs that were already posted still work.
+
 `/createrun-test` works exactly like `/createrun`, except:
 
 - The post starts with a random 6-digit **Merc Run ID** (under the ping):
@@ -177,7 +181,7 @@ Servers that aren't listed have no restrictions.
 | Command | What it does |
 |---|---|
 | `/createrun` | Post a new run and create its private channel |
-| `/createrun-test` | Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
+| `/createrun-test` | (Disabled) Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
 | `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
 | `/settimezone` | Save or change your timezone |
 
@@ -230,6 +234,41 @@ Once you see `Logged in as ...` the bot is online. Keep the window open, since c
 After changing any code, stop the bot and start it again.
 
 To run the tests: `npm test`
+
+### Auto-update from GitHub
+
+`npm start` runs [src/launcher.js](src/launcher.js), which starts the bot. Set `AUTO_UPDATE=true` in `.env`
+and it checks GitHub when it starts and then every `UPDATE_CHECK_HOURS` (default 24):
+
+- No new commits: nothing happens and the bot keeps running.
+- New commits: it pulls them, runs `npm install` if `package.json` changed, and restarts the bot.
+
+This needs `git` and a folder that was set up with `git clone`. Your `.env` and `data/` are never touched.
+If the update fails (for example because of local edits), it logs why and keeps the current version.
+
+### Hosting on Cybrancee
+
+Cybrancee runs bots through a Pterodactyl panel. Setting names can differ slightly.
+
+1. Create a **Node.js** bot server (Node 18 or newer).
+2. In the **Startup** tab:
+   - **Git repo address**: `https://github.com/stephk-p/merc-scheduling-bot.git`
+   - **Branch**: `main`
+   - **User uploaded files**: off (so the panel clones the repo)
+   - **Main file** (bot JS file): `src/launcher.js`
+3. If the server's files are empty, go to **Settings → Reinstall server** so it clones the repo.
+4. In **Files**, create a file called `.env` in the top folder with:
+   ```
+   DISCORD_TOKEN=your-token-here
+   GUILD_ID=all
+   AUTO_UPDATE=true
+   UPDATE_CHECK_HOURS=24
+   ```
+5. Start the server. The console shows `[updater] Auto-update is on...` and then `Logged in as ...`.
+
+After that, anything you push to `main` goes live within a day. To update right away, restart the
+server from the panel.
+Keep a copy of `data/` if you ever reinstall the server, since that's where the runs are saved.
 
 ### Something not working?
 

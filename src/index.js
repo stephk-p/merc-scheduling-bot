@@ -106,7 +106,8 @@ function runCommand(name, description) {
 
 const commands = [
   runCommand('createrun', 'Create a run post that people can sign up for'),
-  runCommand('createrun-test', '[Test] Create a run with a Merc Run ID and its own private channel'),
+  // Disabled for now. Uncomment to bring back /createrun-test (its handler is still below).
+  // runCommand('createrun-test', '[Test] Create a run with a Merc Run ID and its own private channel'),
   new SlashCommandBuilder()
     .setName('managerun')
     .setDescription('Mark a run completed or failed, reschedule it, edit its roster, or delete it')
@@ -347,7 +348,9 @@ function labelsFor(run) {
   const labels = {};
   const key = run.cleareeKey ?? run.cleareeId;
   if (key && run.cleareeName) labels[key] = run.cleareeName;
-  if (run.extraCleareeKey && run.extraCleareeName) labels[run.extraCleareeKey] = run.extraCleareeName;
+  if (run.extraCleareeKey && run.extraCleareeName && !run.extraCleareePinged) {
+    labels[run.extraCleareeKey] = run.extraCleareeName;
+  }
   return labels;
 }
 
@@ -694,8 +697,14 @@ async function handleCreateRun(interaction, { test = false } = {}) {
   const cleareeName = clearee.name;
   const cleareeKey = clearee.key;
 
-  // Clearees are named, not @mentioned, in the channel the run is posted in.
-  const who = cleareeLabel(cleareeName, jobs, role) + (extra ? ` & ${cleareeLabel(extra.name, extraJobs, extraRole)}` : '');
+  // The extra clearee is @mentioned (and pinged) if they're a member who can see this channel.
+  const postChannel = interaction.channel ?? (await client.channels.fetch(interaction.channelId).catch(() => null));
+  const pingExtra = Boolean(extra?.member &&
+    postChannel?.permissionsFor(extra.member)?.has(PermissionFlagsBits.ViewChannel));
+  const extraShown = pingExtra ? `<@${extra.member.id}>` : extra?.name;
+
+  // The main clearee is named, not @mentioned, in the channel the run is posted in.
+  const who = cleareeLabel(cleareeName, jobs, role) + (extra ? ` & ${cleareeLabel(extraShown, extraJobs, extraRole)}` : '');
   const header = `${amount} ${text} for ${who} @ <t:${parsed.ts}:f>`;
   const ping = pingFor(interaction.guildId);
   const run = {
@@ -722,6 +731,7 @@ async function handleCreateRun(interaction, { test = false } = {}) {
     extraCleareeId: extra?.member?.id ?? null,
     extraCleareeKey: extra?.key ?? null,
     extraCleareeName: extra?.name ?? null,
+    extraCleareePinged: pingExtra,
   };
 
   // /createrun-test: merc-run-<id>. /createrun: amount, text and day, e.g. 5m-m4s-clear-sep-28.
@@ -739,11 +749,11 @@ async function handleCreateRun(interaction, { test = false } = {}) {
   run.placed = rendered.placed;
   let post;
   try {
-    const channel = interaction.channel ?? (await client.channels.fetch(interaction.channelId));
+    const channel = postChannel ?? (await client.channels.fetch(interaction.channelId));
     post = await channel.send({
       content: rendered.content,
       components: [runButtons()],
-      allowedMentions: ping.allowedMentions,
+      allowedMentions: { ...ping.allowedMentions, users: pingExtra ? [extra.member.id] : [] },
     });
   } catch (err) {
     console.error(`Couldn't post run ${run.runId}:`, err);
@@ -780,6 +790,8 @@ async function handleCreateRun(interaction, { test = false } = {}) {
   }
   if (extra && !extra.member) {
     done += `\nNo server member matched "${extra.name}", so the extra clearee is shown by name only and wasn't added to the channel.`;
+  } else if (extra && !pingExtra) {
+    done += `\n${extra.name} can't see this channel, so they're shown by name instead of pinged. They were still added to the private channel.`;
   }
   await interaction.editReply({ content: done, allowedMentions: { parse: [] } });
 }
