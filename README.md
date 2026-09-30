@@ -96,6 +96,13 @@ Your jobs for the slot you get are shown on the roster, like `MT - @you (GNB/DRK
 
 The menu shows which roles are open or taken, and tells you where you'll end up before you confirm.
 
+### Saved preference
+
+Use `/setpreference` to save the roles (in order) and jobs you usually sign up with. It uses the same
+menus as Sign up. After that, pressing **Sign up** on a run you haven't joined opens the menu already
+filled in and shows where you'd land, so you just press **Confirm**, or change it first.
+Run `/setpreference` again to change it, or press **Clear preference** to remove it.
+
 ### Who gets priority
 
 First come, first served. Nobody can take a slot away from someone who signed up before them.
@@ -172,6 +179,7 @@ A server can limit who creates runs and who signs up. These rules are set in [sr
 
 - `commandRoles`: only members with one of these roles can use `/createrun`, `/createrun-test` and `/managerun`.
 - `signupRoles`: only members with one of these roles can sign up. Anyone can still press Leave.
+- `preferenceRoles`: only members with one of these roles can use `/setpreference`.
 - `pingRole`: the role pinged on new run posts instead of `@here`.
 
 Servers that aren't listed have no restrictions.
@@ -184,6 +192,7 @@ Servers that aren't listed have no restrictions.
 | `/createrun-test` | (Disabled) Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
 | `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
 | `/settimezone` | Save or change your timezone |
+| `/setpreference` | Save your usual roles and jobs so Sign up is filled in for you |
 
 ---
 
@@ -283,6 +292,7 @@ The top folder should end up looking like this:
 .env
 data/runs.json
 data/timezones.json
+data/preferences.json   (only once someone has used /setpreference)
 src/...
 package.json
 ```

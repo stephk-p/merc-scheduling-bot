@@ -44,6 +44,7 @@ import {
 import { allRuns, deleteRun, findRunById, getRun, newRunId, setRun } from './runs.js';
 import { parseTime } from './time.js';
 import { autocompleteZones, getUserZone, resolveZone, setUserZone } from './timezones.js';
+import { clearPreference, getPreference, setPreference } from './preferences.js';
 
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
 if (!DISCORD_TOKEN) {
@@ -118,6 +119,9 @@ const commands = [
         .setMinLength(6)
         .setMaxLength(6)
         .setAutocomplete(true)),
+  new SlashCommandBuilder()
+    .setName('setpreference')
+    .setDescription('Save your usual roles and jobs so Sign up is filled in for you'),
   new SlashCommandBuilder()
     .setName('settimezone')
     .setDescription('Save your timezone so /createrun understands your times')
@@ -259,6 +263,10 @@ function rolePicker(ns, target, status, selected = [], jobs = [], canConfirm = f
   if (ns === 'edit') {
     confirmRow.addComponents(new ButtonBuilder().setCustomId(`edit:panel:${target.split(':')[0]}`)
       .setLabel('Back').setStyle(ButtonStyle.Secondary));
+  }
+  if (ns === 'pref') {
+    confirmRow.addComponents(new ButtonBuilder().setCustomId('pref:clear')
+      .setLabel('Clear preference').setStyle(ButtonStyle.Danger));
   }
   rows.push(confirmRow);
   return rows;
@@ -1030,7 +1038,7 @@ const selectionValues = (s) => (s.mode === 'bench' ? [...s.roles, BENCH] : [...s
 function previousPicks(message) {
   for (const row of message?.components ?? []) {
     for (const c of row.components ?? []) {
-      if (/^(run|edit):confirm:/.test(c.customId ?? '')) {
+      if (/^(run|edit|pref):confirm:/.test(c.customId ?? '')) {
         const [values, jobs] = c.customId.split(':').slice(-2);
         return { values: decodeValues(values), jobs: decodeJobs(jobs) };
       }
@@ -1087,7 +1095,25 @@ async function handleJoin(interaction) {
   if (isClosed(run)) return interaction.reply(ephemeral(closedMessage(run)));
 
   const mine = run.signups.find((s) => s.userId === interaction.user.id);
-  const { status } = viewFor(run, interaction.user.id);
+  const { others, status } = viewFor(run, interaction.user.id);
+
+  // Not signed up yet: fill the picker in from their saved preference so one click on Confirm signs them up.
+  const pref = !mine && getPreference(interaction.user.id);
+  if (pref) {
+    const signup = selectionToSignup(interaction.user.id, pref.values, pref.jobs);
+    const check = checkSelection(signup);
+    const lines = [
+      `Filled in from your saved preference: **${describeSignup(signup)}**` +
+        (signup.jobs.length ? ` (${describeJobs(signup)})` : '') + '.',
+      outcomeText(signup, render(run, [...others, signup]), true),
+      check.ok ? 'Press **Confirm** to sign up, or change your pick below first.' : check.problems.join('\n'),
+    ];
+    return interaction.reply({
+      content: lines.join('\n'),
+      components: rolePicker('run', post.id, status, pref.values, signup.jobs, check.ok),
+      flags: MessageFlags.Ephemeral,
+    });
+  }
 
   const current = mine
     ? `You're signed up as **${describeSignup(mine)}**` +
@@ -1102,6 +1128,20 @@ async function handleJoin(interaction) {
   });
 }
 
+/**
+ * The picker's full selection after one menu changed. Discord only sends the values of the menu
+ * that changed, so the rest comes from the Confirm button. It also doesn't say which order roles
+ * were ticked in, so the order from the last update is kept and newly ticked roles go on the end.
+ */
+function nextPicks(interaction, kind) {
+  const prev = previousPicks(interaction.message);
+  if (kind === 'select') return { values: orderedSelection(prev.values, interaction.values), jobs: prev.jobs };
+  const menuJobs = kind === 'jobs-tank' ? TANK_JOBS
+    : kind === 'jobs-melee' ? MELEE_JOBS
+      : jobsForRoles(prev.values.filter((r) => OPTIONAL_JOB_ROLES.includes(r)));
+  return { values: prev.values, jobs: [...prev.jobs.filter((j) => !menuJobs.includes(j)), ...interaction.values] };
+}
+
 /** `targetId` is set when a run manager is editing someone else's pick from /managerun. */
 async function handleSelect(interaction, messageId, kind, targetId = null) {
   if (targetId) {
@@ -1111,20 +1151,7 @@ async function handleSelect(interaction, messageId, kind, targetId = null) {
   } else if (!hasRuleRole(interaction, 'signupRoles')) {
     return interaction.update({ content: needRoleText(interaction, 'signupRoles', 'sign up for runs'), components: [] });
   }
-  // Discord only sends the values of the menu that changed. The rest of the selection is kept in
-  // the Confirm button. It also doesn't say which order roles were ticked in, so the order from
-  // the last update is kept and newly ticked roles go on the end.
-  const prev = previousPicks(interaction.message);
-  let values = prev.values;
-  let jobs = prev.jobs;
-  if (kind === 'select') {
-    values = orderedSelection(prev.values, interaction.values);
-  } else {
-    const menuJobs = kind === 'jobs-tank' ? TANK_JOBS
-      : kind === 'jobs-melee' ? MELEE_JOBS
-        : jobsForRoles(values.filter((r) => OPTIONAL_JOB_ROLES.includes(r)));
-    jobs = [...jobs.filter((j) => !menuJobs.includes(j)), ...interaction.values];
-  }
+  const { values, jobs } = nextPicks(interaction, kind);
 
   let run = targetId ? getRun(messageId) : null;
   if (!run) {
@@ -1344,6 +1371,58 @@ async function handleEditRemove(interaction, messageId) {
 }
 
 // ---------------------------------------------------------------------------
+// /setpreference
+// ---------------------------------------------------------------------------
+const PREF_HELP =
+  'Pick the roles you usually sign up for, **in order of preference**, and your jobs. ' +
+  'Next time you press **Sign up** on a run, the menu is filled in with this so you only have to press Confirm ' +
+  '(you can still change it before confirming).';
+
+function prefView(userId, values, jobs) {
+  const signup = selectionToSignup(userId, values, jobs);
+  const check = checkSelection(signup);
+  const lines = [PREF_HELP, ''];
+  if (values.length) {
+    lines.push(`Preference: **${describeSignup(signup)}**` + (signup.jobs.length ? ` (${describeJobs(signup)})` : ''));
+  }
+  if (check.ok) lines.push('Press **Confirm** to save it.');
+  else if (values.length) lines.push(...check.problems);
+  return { content: lines.join('\n'), components: rolePicker('pref', 'me', {}, values, signup.jobs, check.ok) };
+}
+
+async function handleSetPreference(interaction) {
+  if (!hasRuleRole(interaction, 'preferenceRoles')) {
+    return interaction.reply(ephemeral(needRoleText(interaction, 'preferenceRoles', 'use `/setpreference`')));
+  }
+  const saved = getPreference(interaction.user.id);
+  return interaction.reply({
+    ...prefView(interaction.user.id, saved?.values ?? [], saved?.jobs ?? []),
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handlePrefSelect(interaction, kind) {
+  const { values, jobs } = nextPicks(interaction, kind);
+  return interaction.update(prefView(interaction.user.id, values, jobs));
+}
+
+async function handlePrefButton(interaction, action, encodedValues, encodedJobs) {
+  if (action === 'clear') {
+    clearPreference(interaction.user.id);
+    return interaction.update({ content: 'Your preference was cleared.', components: [] });
+  }
+  const signup = selectionToSignup(interaction.user.id, decodeValues(encodedValues), decodeJobs(encodedJobs));
+  if (!checkSelection(signup).ok) return interaction.update(prefView(interaction.user.id, [], []));
+  setPreference(interaction.user.id, selectionValues(signup), signup.jobs);
+  return interaction.update({
+    content: `✅ Preference saved: **${describeSignup(signup)}**` +
+      (signup.jobs.length ? ` (${describeJobs(signup)})` : '') +
+      '. Press **Sign up** on any run and it will be filled in for you.',
+    components: [],
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -1440,6 +1519,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'createrun-test': return await handleCreateRun(interaction, { test: true });
         case 'managerun': return await handleManageRun(interaction);
         case 'settimezone': return await handleSetTimezone(interaction);
+        case 'setpreference': return await handleSetPreference(interaction);
         default: return;
       }
     }
@@ -1457,6 +1537,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
       const [ns, action, messageId, picks, jobs] = interaction.customId.split(':');
+      if (ns === 'pref') return await handlePrefButton(interaction, action, picks, jobs);
       if (ns === 'manage') return await handleManageButton(interaction, action, messageId);
       if (ns !== 'run') return;
       if (action === 'join') return await handleJoin(interaction);
@@ -1476,6 +1557,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'edit' && action === 'remove') return await handleEditRemove(interaction, messageId);
       if (ns === 'edit' && ['select', 'jobs-tank', 'jobs-melee', 'jobs-opt'].includes(action)) {
         return await handleSelect(interaction, messageId, action, userId);
+      }
+      if (ns === 'pref' && ['select', 'jobs-tank', 'jobs-melee', 'jobs-opt'].includes(action)) {
+        return await handlePrefSelect(interaction, action);
       }
       if (ns === 'run' && ['select', 'jobs-tank', 'jobs-melee', 'jobs-opt'].includes(action)) {
         return await handleSelect(interaction, messageId, action);

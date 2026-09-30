@@ -4,11 +4,13 @@
 //                  /createrun, /createrun-test and /managerun
 //   signupRoles  - only members with at least one of these roles can sign up for runs
 //                  (anyone can still press Leave)
+//   preferenceRoles - only members with at least one of these roles can use /setpreference
 //   pingRole     - role pinged at the top of new run posts (servers without one get @here)
 export const SERVER_RULES = {
   '1529143174872825916': {
     commandRoles: ['1551648248593256498'],
     signupRoles: ['1529562550348288040'],
+    preferenceRoles: ['1529562550348288040'],
     pingRole: '1529562550348288040',
   },
 };
