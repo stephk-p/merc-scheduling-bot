@@ -177,11 +177,18 @@ Only the person who created the run, or anyone with the Manage Channels permissi
 
 The bot needs **Manage Channels** and **Manage Roles** to create run channels, and
 **Mention @everyone, @here and All Roles** for the ping. The invite link above already includes them.
-If you added the bot before, give its role those permissions in Server Settings.
+If you added the bot before, give its role those permissions in Server Settings. For
+`ACTIVE_ROSTER_ROLE` below, the bot's own role also needs to sit **above** that role in
+Server Settings → Roles, or it won't be able to add/remove it.
 
 On servers set up for it (see `RUN_START_PING` in [src/config.js](src/config.js)), the bot pings a
 role in the run's private channel 30 minutes before it starts, e.g. "Run is starting in 30 minutes!
  PF will be up shortly." Other servers get the same message and timing, pinging `@here` instead.
+
+On servers set up for it (see `ACTIVE_ROSTER_ROLE` in [src/config.js](src/config.js)), the bot also
+gives a role to whoever currently holds a slot in a run (not bench or waitlisted), and takes it away
+the moment they're bumped, leave, or the run ends. DM reminders only go out to people who currently
+hold a slot, so bench/waitlisted mercs aren't bothered about a run they might not play in.
 
 ## Role restrictions
 
