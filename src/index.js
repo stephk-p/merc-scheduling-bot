@@ -750,21 +750,20 @@ async function sendDmReminder(run, userId, minutes) {
 }
 
 /**
- * Posted once in the private channel when a run's scheduled time arrives, pinging the server's
- * commandRoles so a manager marks it completed/failed or reschedules it. The buttons are the same
- * manage:complete/fail/reschedule ones /managerun uses, so clicking them is gated the same way
- * (commandRoles, an admin, or a /permissions grant) — clicking Reschedule just opens that same
- * modal and doesn't change anything until it's submitted.
+ * DMs the run's creator (privately, nobody else in the channel sees this) when the scheduled time
+ * arrives, prompting them to mark it completed/failed or reschedule it. Same manage:complete/fail/
+ * reschedule buttons /managerun uses, so clicking them is gated the same way (commandRoles, an
+ * admin, or a /permissions grant) — Reschedule just opens that same modal and doesn't change
+ * anything until it's submitted. The bot has no way to look up everyone with commandRoles without
+ * the privileged Members intent, so this only reaches the creator for now.
  */
 async function sendStartPrompt(run, messageId) {
-  const channel = await client.channels.fetch(run.privateChannelId);
-  const roleIds = SERVER_RULES[run.guildId]?.commandRoles ?? [];
-  const mention = roleIds.map((id) => `<@&${id}>`).join(' ');
-  await channel.send({
-    content: `${mention ? `${mention} ` : ''}**${runName(run)}** was scheduled to start <t:${run.startsAt}:R>. ` +
+  if (!isUserId(run.creatorId)) return;
+  const user = await client.users.fetch(run.creatorId);
+  await user.send({
+    content: `**${runName(run)}** was scheduled to start <t:${run.startsAt}:R>. ` +
       'Mark it completed or failed, or reschedule it:',
     components: startPromptButtons(messageId),
-    allowedMentions: { roles: roleIds },
   });
 }
 
@@ -784,7 +783,7 @@ async function sweepReminders() {
     }
 
     if (msUntilStart <= 0) {
-      if (!run.startPromptSent && run.privateChannelId) {
+      if (!run.startPromptSent) {
         run.startPromptSent = true;
         setRun(messageId, run);
         await sendStartPrompt(run, messageId)
