@@ -25,6 +25,7 @@ import {
   RESTRICTED_COMMANDS,
   RUN_START_PING,
   SERVER_RULES,
+  START_PROMPT_ENABLED,
 } from './config.js';
 import {
   BENCH,
@@ -783,7 +784,7 @@ async function sweepReminders() {
     }
 
     if (msUntilStart <= 0) {
-      if (!run.startPromptSent) {
+      if (START_PROMPT_ENABLED[run.guildId] && !run.startPromptSent) {
         run.startPromptSent = true;
         setRun(messageId, run);
         await sendStartPrompt(run, messageId)
