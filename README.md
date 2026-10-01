@@ -190,6 +190,11 @@ gives a role to whoever currently holds a slot in a run (not bench or waitlisted
 the moment they're bumped, leave, or the run ends. DM reminders only go out to people who currently
 hold a slot, so bench/waitlisted mercs aren't bothered about a run they might not play in.
 
+When a run's scheduled time arrives, the bot posts a message in its private channel pinging
+`commandRoles` with **Completed**, **Failed** and **Reschedule** buttons — the same ones on
+`/managerun`, so they're gated the same way. Clicking Reschedule just opens the usual reschedule
+form; nothing changes until it's submitted.
+
 ## Role restrictions
 
 A server can limit who creates runs and who signs up. These rules are set in [src/config.js](src/config.js):

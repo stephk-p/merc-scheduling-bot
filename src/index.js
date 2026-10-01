@@ -354,6 +354,21 @@ function manageButtons(messageId, run) {
   ];
 }
 
+// Same handlers as /managerun's buttons (manage:complete/fail/reschedule), just a smaller set
+// posted automatically when a run's scheduled time arrives.
+function startPromptButtons(messageId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`manage:complete:${messageId}`).setLabel('Completed').setEmoji('✅')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`manage:fail:${messageId}`).setLabel('Failed').setEmoji('❌')
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId(`manage:reschedule:${messageId}`).setLabel('Reschedule').setEmoji('🕒')
+        .setStyle(ButtonStyle.Primary),
+    ),
+  ];
+}
+
 /** Multi-select for DM reminder timing. Saves immediately, no separate confirm step. */
 function reminderMenu(selected = []) {
   return new ActionRowBuilder().addComponents(
@@ -734,6 +749,25 @@ async function sendDmReminder(run, userId, minutes) {
   );
 }
 
+/**
+ * Posted once in the private channel when a run's scheduled time arrives, pinging the server's
+ * commandRoles so a manager marks it completed/failed or reschedules it. The buttons are the same
+ * manage:complete/fail/reschedule ones /managerun uses, so clicking them is gated the same way
+ * (commandRoles, an admin, or a /permissions grant) — clicking Reschedule just opens that same
+ * modal and doesn't change anything until it's submitted.
+ */
+async function sendStartPrompt(run, messageId) {
+  const channel = await client.channels.fetch(run.privateChannelId);
+  const roleIds = SERVER_RULES[run.guildId]?.commandRoles ?? [];
+  const mention = roleIds.map((id) => `<@&${id}>`).join(' ');
+  await channel.send({
+    content: `${mention ? `${mention} ` : ''}**${runName(run)}** was scheduled to start <t:${run.startsAt}:R>. ` +
+      'Mark it completed or failed, or reschedule it:',
+    components: startPromptButtons(messageId),
+    allowedMentions: { roles: roleIds },
+  });
+}
+
 // Role ping and DM reminders for runs starting soon. Runs every minute alongside sweepChannels,
 // re-using the same timer instead of one per run, and tracks what's already been sent on the run
 // itself so a restart never sends a duplicate.
@@ -742,12 +776,21 @@ async function sweepReminders() {
   for (const [messageId, run] of allRuns()) {
     if (run.status !== 'open' || !run.startsAt) continue;
     const msUntilStart = run.startsAt * 1000 - now;
-    if (msUntilStart <= 0) continue;
 
     // Catches runs that existed before this role was set up, or whose roster hasn't changed since.
     if (ACTIVE_ROSTER_ROLE[run.guildId]) {
       const guild = await client.guilds.fetch(run.guildId).catch(() => null);
       if (guild) await syncActiveRosterRole(run, guild);
+    }
+
+    if (msUntilStart <= 0) {
+      if (!run.startPromptSent && run.privateChannelId) {
+        run.startPromptSent = true;
+        setRun(messageId, run);
+        await sendStartPrompt(run, messageId)
+          .catch((err) => console.error(`Couldn't send the start prompt for run ${run.runId}:`, err.message));
+      }
+      continue;
     }
 
     const rolePing = RUN_START_PING[run.guildId] ?? DEFAULT_RUN_START_PING;
@@ -1296,6 +1339,7 @@ async function handleRescheduleSubmit(interaction, messageId) {
     run.channelDeleteAt = null;
     run.rolePingSent = false;
     run.dmRemindersSent = {};
+    run.startPromptSent = false;
     const postExists = await updatePost(messageId, run);
     setRun(messageId, run);
     await syncActiveRosterRole(run, interaction.guild);
