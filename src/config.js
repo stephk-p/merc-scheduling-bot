@@ -1,10 +1,12 @@
-// Per-server rules. Servers that aren't listed here have no role restrictions.
+// Per-server rules. Servers that aren't listed here get the defaults noted below.
 //
 //   commandRoles - only members with at least one of these roles can use
-//                  /createrun, /createrun-test, /managerun and /runs
+//                  /createrun, /createrun-test, /managerun and /runs.
+//                  Not set: only server admins (plus anyone granted access via /permissions).
 //   signupRoles  - only members with at least one of these roles can sign up for runs
-//                  (anyone can still press Leave)
-//   preferenceRoles - only members with at least one of these roles can use /setpreference
+//                  (anyone can still press Leave). Not set: open to everyone.
+//   preferenceRoles - only members with at least one of these roles can use /setpreference.
+//                     Not set: open to everyone.
 //   pingRole     - role pinged at the top of new run posts (servers without one get @here)
 export const SERVER_RULES = {
   '1529143174872825916': {

@@ -187,17 +187,21 @@ role in the run's private channel 30 minutes before it starts, e.g. "Run is star
 
 A server can limit who creates runs and who signs up. These rules are set in [src/config.js](src/config.js):
 
-- `commandRoles`: only members with one of these roles can use `/createrun`, `/createrun-test` and `/managerun`.
+- `commandRoles`: only members with one of these roles can use `/createrun`, `/createrun-test`,
+  `/managerun` and `/runs`. **If a server doesn't set this, those commands are admin-only by default**
+  (see `/permissions` below to open them up to others).
 - `signupRoles`: only members with one of these roles can sign up. Anyone can still press Leave.
-- `preferenceRoles`: only members with one of these roles can use `/setpreference`.
+  Open to everyone if not set.
+- `preferenceRoles`: only members with one of these roles can use `/setpreference`. Open to everyone
+  if not set.
 - `pingRole`: the role pinged on new run posts instead of `@here`.
 
-Servers that aren't listed have no restrictions.
+Server admins (Administrator permission) can always use every command regardless of these rules.
 
-An admin (Administrator permission) can also use `/permissions` to grant or revoke `/createrun`,
-`/managerun`, `/runs` or `/setpreference` access for a specific role or member, on top of the rules
-above — handy for one-off helpers without changing `commandRoles` itself. `/permissions list` shows
-every extra grant in the server.
+An admin can also use `/permissions` to grant or revoke `/createrun`, `/managerun`, `/runs` or
+`/setpreference` access for a specific role or member, on top of (or instead of) `commandRoles` —
+this is how you let non-admins use those commands without making them admins. `/permissions list`
+shows every extra grant in the server.
 
 ## Commands
 

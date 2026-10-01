@@ -523,12 +523,34 @@ const needRoleText = (interaction, rule, action) =>
   `Only members with the ${SERVER_RULES[interaction.guildId][rule].map((id) => `<@&${id}>`).join(' or ')} ` +
   `role can ${action}.`;
 
-/** Whether the member passes the server's rule, OR has been granted this specific command via /permissions. */
+/**
+ * Whether the member can use a restricted command: a server admin, someone passing the server's
+ * `commandRoles` rule (if set), or someone granted this specific command via /permissions.
+ * Restricted commands (`rule === 'commandRoles'`) default to admin-only when a server hasn't set
+ * `commandRoles` at all; other rules (preferenceRoles, signupRoles) stay open by default.
+ */
 function hasCommandAccess(interaction, command, rule = 'commandRoles') {
-  if (hasRuleRole(interaction, rule)) return true;
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) return true;
+
+  const required = SERVER_RULES[interaction.guildId]?.[rule];
+  if (required?.length) {
+    if (memberRoleIds(interaction.member).some((id) => required.includes(id))) return true;
+  } else if (rule !== 'commandRoles') {
+    return true;
+  }
+
   const { roles, users } = getGrants(interaction.guildId, command);
   if (users.includes(interaction.user.id)) return true;
   return memberRoleIds(interaction.member).some((id) => roles.includes(id));
+}
+
+/** Denial message for a restricted command, whether or not the server has set `commandRoles`. */
+function commandAccessDeniedText(interaction, action) {
+  const required = SERVER_RULES[interaction.guildId]?.commandRoles;
+  const who = required?.length
+    ? `members with the ${required.map((id) => `<@&${id}>`).join(' or ')} role, server administrators,`
+    : 'server administrators';
+  return `Only ${who} or members granted access via \`/permissions\` can ${action}.`;
 }
 
 function canManage(interaction, run) {
@@ -1776,7 +1798,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (RESTRICTED_COMMANDS.includes(interaction.commandName) &&
           !hasCommandAccess(interaction, interaction.commandName)) {
         return await interaction.reply(
-          ephemeral(needRoleText(interaction, 'commandRoles', `use \`/${interaction.commandName}\``)),
+          ephemeral(commandAccessDeniedText(interaction, `use \`/${interaction.commandName}\``)),
         );
       }
       switch (interaction.commandName) {
