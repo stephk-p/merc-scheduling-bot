@@ -19,7 +19,13 @@ import {
   escapeMarkdown,
 } from 'discord.js';
 import { DateTime } from 'luxon';
-import { RESTRICTED_COMMANDS, RUN_START_PING, DEFAULT_RUN_START_PING, SERVER_RULES } from './config.js';
+import {
+  ACTIVE_ROSTER_ROLE,
+  DEFAULT_RUN_START_PING,
+  RESTRICTED_COMMANDS,
+  RUN_START_PING,
+  SERVER_RULES,
+} from './config.js';
 import {
   BENCH,
   JOBS,
@@ -442,6 +448,41 @@ const render = (run, signups = run.signups) =>
 
 const isUserId = (id) => /^\d{15,21}$/.test(id ?? '');
 
+/** Whether userId currently holds a slot in this run (not bench/waitlisted). */
+function isActiveRosterMember(run, userId) {
+  const { result } = render(run);
+  return ROLES.some((r) => result.slots[r]?.userId === userId);
+}
+
+/**
+ * Keep ACTIVE_ROSTER_ROLE in sync with who actually holds a slot in this run. Checks every
+ * current sign-up plus `extraUserIds` (people who just left/were removed, so no longer appear in
+ * run.signups but may still hold the role). `active: false` strips the role from everyone checked,
+ * for when a run is no longer live (completed, failed or deleted).
+ */
+async function syncActiveRosterRole(run, guild, { extraUserIds = [], active = true } = {}) {
+  const roleId = ACTIVE_ROSTER_ROLE[run.guildId];
+  if (!roleId || !guild) return;
+
+  const { result } = active ? render(run) : { result: null };
+  const placedIds = new Set(active ? ROLES.map((r) => result.slots[r]?.userId).filter(Boolean) : []);
+  const userIds = new Set([...run.signups.map((s) => s.userId), ...extraUserIds].filter(isUserId));
+
+  for (const userId of userIds) {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) continue;
+    const shouldHave = placedIds.has(userId);
+    const has = member.roles.cache.has(roleId);
+    if (shouldHave && !has) {
+      await member.roles.add(roleId).catch((err) =>
+        console.error(`Couldn't add the active roster role to ${userId} for run ${run.runId}:`, err.message));
+    } else if (!shouldHave && has) {
+      await member.roles.remove(roleId).catch((err) =>
+        console.error(`Couldn't remove the active roster role from ${userId} for run ${run.runId}:`, err.message));
+    }
+  }
+}
+
 /** Everyone who should be able to see a run's private channel (real Discord users only). */
 function channelMembers(run) {
   return [...new Set([run.creatorId, run.cleareeId, run.extraCleareeId, ...run.signups.map((s) => s.userId)]
@@ -714,7 +755,7 @@ async function sweepReminders() {
 
     for (const signup of run.signups) {
       const minutes = getReminderMinutes(signup.userId);
-      if (!minutes.length) continue;
+      if (!minutes.length || !isActiveRosterMember(run, signup.userId)) continue;
       const sent = run.dmRemindersSent?.[signup.userId] ?? [];
       const due = minutes.filter((m) => !sent.includes(m) && msUntilStart <= m * 60 * 1000);
       if (!due.length) continue;
@@ -939,6 +980,7 @@ async function handleCreateRun(interaction, { test = false } = {}) {
     );
   }
   setRun(post.id, run);
+  await syncActiveRosterRole(run, interaction.guild);
 
   // Copy of the run post in the private channel. It's kept in sync whenever the roster changes.
   const copy = await privateChannel.send({
@@ -1148,6 +1190,7 @@ async function closeRun(interaction, messageId, status) {
     // A completed run with no channel left to clean up is forgotten right away.
     if (status === 'completed' && !run.privateChannelId) deleteRun(messageId);
     else setRun(messageId, run);
+    await syncActiveRosterRole(run, interaction.guild, { active: false });
 
     // The private channel only has the roster copy, which updatePost() already refreshed.
     const deleteAt = run.channelDeleteAt ? Math.floor(run.channelDeleteAt / 1000) : null;
@@ -1174,6 +1217,7 @@ async function deleteWholeRun(interaction, messageId) {
     if (post) await post.delete().catch(() => {});
     const privateChannel = await fetchPrivateChannel(run);
     if (privateChannel) await privateChannel.delete(`Merc run ${run.runId} deleted by ${interaction.user.tag}`).catch(() => {});
+    await syncActiveRosterRole(run, interaction.guild, { active: false });
     deleteRun(messageId);
 
     // If /managerun was used inside the private channel, that channel is gone now, so this can fail.
@@ -1248,6 +1292,7 @@ async function handleRescheduleSubmit(interaction, messageId) {
     run.dmRemindersSent = {};
     const postExists = await updatePost(messageId, run);
     setRun(messageId, run);
+    await syncActiveRosterRole(run, interaction.guild);
 
     if (!showsRunId(run) && run.privateChannelId) renameDayChannel(run, parsed.date);
 
@@ -1495,6 +1540,7 @@ async function handleConfirm(interaction, messageId, encodedValues, encodedJobs)
     await post.edit({ content: rendered.content, allowedMentions: { parse: [] } });
     const updated = { ...run, signups, placed: rendered.placed };
     setRun(messageId, updated);
+    await syncActiveRosterRole(updated, interaction.guild);
     await interaction.update({
       content: outcomeText(signup, rendered) + (signup.jobs.length ? `\nJobs: **${describeJobs(signup)}**` : ''),
       components: [],
@@ -1518,6 +1564,7 @@ async function handleLeave(interaction) {
     await interaction.update({ content: rendered.content, allowedMentions: { parse: [] } });
     const updated = { ...run, signups, placed: rendered.placed };
     setRun(post.id, updated);
+    await syncActiveRosterRole(updated, interaction.guild, { extraUserIds: [interaction.user.id] });
     await interaction.followUp(ephemeral(`Removed you from the run (you were **${describeSignup(mine)}**).`));
     await syncRosterCopy(updated, rendered.content);
     await removeFromPrivateChannel(updated, interaction.user.id);
@@ -1610,6 +1657,7 @@ async function handleEditConfirm(interaction, messageId, userId, encodedValues, 
     run.signups = signups;
     await updatePost(messageId, run);
     setRun(messageId, run);
+    await syncActiveRosterRole(run, interaction.guild);
     if (isNew) await addToPrivateChannel(run, userId);
     return interaction.editReply(await editPanel(interaction, messageId, run,
       outcomeText(signup, rendered, false, `<@${userId}>`)));
@@ -1630,6 +1678,7 @@ async function handleEditRemove(interaction, messageId) {
     run.signups = run.signups.filter((s) => !removed.includes(s));
     await updatePost(messageId, run);
     setRun(messageId, run);
+    await syncActiveRosterRole(run, interaction.guild, { extraUserIds: removed.map((s) => s.userId) });
     for (const s of removed) await removeFromPrivateChannel(run, s.userId);
 
     const labels = labelsFor(run);

@@ -21,11 +21,18 @@ export const SERVER_RULES = {
 //   roleId        - role pinged (servers without one get @here)
 //   minutesBefore - how long before the run's start time the ping goes out
 export const RUN_START_PING = {
-  '1529143174872825916': { roleId: '1529562550348288040', minutesBefore: 30 },
+  '1529143174872825916': { roleId: '1555042669154275348', minutesBefore: 30 },
 };
 
 /** Used for servers not listed in RUN_START_PING above. */
 export const DEFAULT_RUN_START_PING = { roleId: null, minutesBefore: 30 };
+
+// Per-server role given to whoever currently holds a slot (not bench/waitlisted) in a run, so the
+// "run starting soon" ping above only reaches people who can actually see the channel and are
+// really playing. Added/removed automatically as the roster changes.
+export const ACTIVE_ROSTER_ROLE = {
+  '1529143174872825916': '1555042669154275348',
+};
 
 /** Commands that are limited by `commandRoles`. */
 export const RESTRICTED_COMMANDS = ['createrun', 'createrun-test', 'managerun', 'runs'];
