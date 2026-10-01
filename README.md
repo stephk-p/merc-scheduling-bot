@@ -199,6 +199,7 @@ Servers that aren't listed have no restrictions.
 | `/createrun` | Post a new run and create its private channel |
 | `/createrun-test` | (Disabled) Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
 | `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
+| `/runs` | List current runs by name with a link to each private channel (no post content) |
 | `/settimezone` | Save or change your timezone |
 | `/setpreference` | Save your usual roles and jobs so Sign up is filled in for you, and choose when you get DM reminders |
 

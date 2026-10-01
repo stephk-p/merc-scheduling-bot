@@ -1,7 +1,7 @@
 // Per-server rules. Servers that aren't listed here have no role restrictions.
 //
 //   commandRoles - only members with at least one of these roles can use
-//                  /createrun, /createrun-test and /managerun
+//                  /createrun, /createrun-test, /managerun and /runs
 //   signupRoles  - only members with at least one of these roles can sign up for runs
 //                  (anyone can still press Leave)
 //   preferenceRoles - only members with at least one of these roles can use /setpreference
@@ -23,4 +23,4 @@ export const RUN_START_PING = {
 };
 
 /** Commands that are limited by `commandRoles`. */
-export const RESTRICTED_COMMANDS = ['createrun', 'createrun-test', 'managerun'];
+export const RESTRICTED_COMMANDS = ['createrun', 'createrun-test', 'managerun', 'runs'];

@@ -130,6 +130,9 @@ const commands = [
         .setMaxLength(6)
         .setAutocomplete(true)),
   new SlashCommandBuilder()
+    .setName('runs')
+    .setDescription('List current runs and their private channels'),
+  new SlashCommandBuilder()
     .setName('setpreference')
     .setDescription('Save your usual roles and jobs so Sign up is filled in for you'),
   new SlashCommandBuilder()
@@ -927,6 +930,24 @@ async function handleManageRun(interaction) {
   });
 }
 
+// Plain list of runs: full name and private channel link, no post content.
+async function handleListRuns(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+
+  const runs = allRuns()
+    .map(([, run]) => run)
+    .filter((run) => run.guildId === interaction.guildId && run.status !== 'completed')
+    .sort((a, b) => (a.startsAt ?? 0) - (b.startsAt ?? 0));
+
+  if (!runs.length) return interaction.reply(ephemeral('There are no runs right now.'));
+
+  const lines = runs.map((run) => {
+    const channel = run.privateChannelId ? `<#${run.privateChannelId}>` : '_channel deleted_';
+    return `**${run.title ?? run.header}** — ${channel}`;
+  });
+  return interaction.reply({ content: lines.join('\n'), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+}
+
 // ---------------------------------------------------------------------------
 // /managerun actions
 // ---------------------------------------------------------------------------
@@ -1617,6 +1638,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'createrun': return await handleCreateRun(interaction);
         case 'createrun-test': return await handleCreateRun(interaction, { test: true });
         case 'managerun': return await handleManageRun(interaction);
+        case 'runs': return await handleListRuns(interaction);
         case 'settimezone': return await handleSetTimezone(interaction);
         case 'setpreference': return await handleSetPreference(interaction);
         default: return;
