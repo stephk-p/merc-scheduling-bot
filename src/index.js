@@ -744,6 +744,12 @@ async function sweepReminders() {
     const msUntilStart = run.startsAt * 1000 - now;
     if (msUntilStart <= 0) continue;
 
+    // Catches runs that existed before this role was set up, or whose roster hasn't changed since.
+    if (ACTIVE_ROSTER_ROLE[run.guildId]) {
+      const guild = await client.guilds.fetch(run.guildId).catch(() => null);
+      if (guild) await syncActiveRosterRole(run, guild);
+    }
+
     const rolePing = RUN_START_PING[run.guildId] ?? DEFAULT_RUN_START_PING;
     if (run.privateChannelId && !run.rolePingSent &&
         msUntilStart <= rolePing.minutesBefore * 60 * 1000) {
