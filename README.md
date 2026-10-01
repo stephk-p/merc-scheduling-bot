@@ -37,8 +37,8 @@ R2 -
 The post pings `@here` on the first line (some servers ping a role instead, see [Role restrictions](#role-restrictions)).
 The ping only goes out when the run is posted, not when people sign up or the post is updated.
 
-It also creates a private channel called `5m-m4s-clear-sep-28` (amount, merc run type and the day of the run)
-in the same category. Only you, the clearee and the people who sign up can see it.
+It also creates a private channel called `5m-m4s-clear-stephk-sep-28` (amount, merc run type, clearee and the
+day of the run) in the same category. Only you, the clearee and the people who sign up can see it.
 People are added when they sign up and removed if they leave.
 
 The private channel starts with a pinned copy of the run post (without the ping).
@@ -106,6 +106,8 @@ Run `/setpreference` again to change it, or press **Clear preference** to remove
 `/setpreference` also sends a second message where you can pick one or more times (5 to 60 minutes
 before a run starts) to get a DM reminder. It only reminds you about runs you're signed up for, and
 saves as soon as you pick, so there's nothing else to confirm. Clear the selection to turn it off.
+The DM names the run (amount, merc run type and clearee) and links its private channel so you can jump
+straight to it.
 
 ### Who gets priority
 

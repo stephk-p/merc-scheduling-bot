@@ -490,11 +490,12 @@ const slug = (s) => s.toLowerCase()
   .replace(/-{2,}/g, '-')
   .replace(/^-+|-+$/g, '');
 
-/** /createrun channel name: amount, text and the day of the run, e.g. "5m-m4s-clear-sep-28". */
-function dayChannelName(title, date) {
+/** /createrun channel name: amount, text, clearee and the day of the run, e.g. "5m-m4s-clear-stephk-sep-28". */
+function dayChannelName(title, cleareeName, date) {
   const day = slug(date.setLocale('en-US').toFormat('LLL d'));
-  const base = slug(title).slice(0, 99 - day.length).replace(/-+$/, '');
-  return base ? `${base}-${day}` : day;
+  const suffix = [slug(cleareeName), day].filter(Boolean).join('-');
+  const base = slug(title).slice(0, 98 - suffix.length).replace(/-+$/, '');
+  return base ? `${base}-${suffix}` : suffix;
 }
 
 // ---------------------------------------------------------------------------
@@ -586,7 +587,10 @@ async function syncRosterCopy(run, postContent) {
 // only allows 2 renames per channel every 10 minutes and would otherwise hold up the reply.
 function renameDayChannel(run, date) {
   fetchPrivateChannel(run)
-    .then((channel) => channel?.setName(dayChannelName(run.title, date), `Merc run ${run.runId} rescheduled`))
+    .then((channel) => channel?.setName(
+      dayChannelName(run.title, run.cleareeName, date),
+      `Merc run ${run.runId} rescheduled`,
+    ))
     .catch((err) => console.error(`Couldn't rename the channel for run ${run.runId}:`, err.message));
 }
 
@@ -603,8 +607,10 @@ async function sendRolePing(run, roleId) {
 /** DMs one user a reminder for a run they're signed up for. */
 async function sendDmReminder(run, userId, minutes) {
   const user = await client.users.fetch(userId);
+  const name = run.title && run.cleareeName ? `${run.title} - ${run.cleareeName}` : run.title ?? run.header;
+  const link = run.privateChannelId ? `\nChannel: <#${run.privateChannelId}>` : '';
   await user.send(
-    `⏰ Reminder: **${run.title ?? run.header}** starts <t:${run.startsAt}:R> (${reminderLabel(minutes)}).`,
+    `⏰ Reminder: **${name}** starts <t:${run.startsAt}:R> (${reminderLabel(minutes)}).${link}`,
   );
 }
 
@@ -825,8 +831,8 @@ async function handleCreateRun(interaction, { test = false } = {}) {
     extraCleareePinged: pingExtra,
   };
 
-  // /createrun-test: merc-run-<id>. /createrun: amount, text and day, e.g. 5m-m4s-clear-sep-28.
-  const channelName = test ? `merc-run-${run.runId}` : dayChannelName(run.title, parsed.date);
+  // /createrun-test: merc-run-<id>. /createrun: amount, text, clearee and day, e.g. 5m-m4s-clear-stephk-sep-28.
+  const channelName = test ? `merc-run-${run.runId}` : dayChannelName(run.title, run.cleareeName, parsed.date);
   let privateChannel;
   try {
     privateChannel = await createPrivateChannel(interaction, run, channelName);
