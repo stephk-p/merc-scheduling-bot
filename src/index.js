@@ -490,9 +490,10 @@ const slug = (s) => s.toLowerCase()
   .replace(/-{2,}/g, '-')
   .replace(/^-+|-+$/g, '');
 
-/** /createrun channel name: amount, text, clearee and the day of the run, e.g. "5m-m4s-clear-stephk-sep-28". */
+/** /createrun channel name: amount, text, clearee, weekday and date, e.g. "5m-m4s-clear-stephk-monday-sep-28". */
 function dayChannelName(title, cleareeName, date) {
-  const day = slug(date.setLocale('en-US').toFormat('LLL d'));
+  const zoned = date.setLocale('en-US');
+  const day = slug(`${zoned.toFormat('cccc')} ${zoned.toFormat('LLL d')}`);
   const suffix = [slug(cleareeName), day].filter(Boolean).join('-');
   const base = slug(title).slice(0, 98 - suffix.length).replace(/-+$/, '');
   return base ? `${base}-${suffix}` : suffix;
@@ -610,7 +611,7 @@ async function sendDmReminder(run, userId, minutes) {
   const name = run.title && run.cleareeName ? `${run.title} - ${run.cleareeName}` : run.title ?? run.header;
   const link = run.privateChannelId ? `\nChannel: <#${run.privateChannelId}>` : '';
   await user.send(
-    `⏰ Reminder: **${name}** starts <t:${run.startsAt}:R> (${reminderLabel(minutes)}).${link}`,
+    `⏰ Reminder: **${name}** starts <t:${run.startsAt}:R> on <t:${run.startsAt}:F> (${reminderLabel(minutes)}).${link}`,
   );
 }
 
