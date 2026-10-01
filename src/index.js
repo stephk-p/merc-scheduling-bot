@@ -19,7 +19,7 @@ import {
   escapeMarkdown,
 } from 'discord.js';
 import { DateTime } from 'luxon';
-import { RESTRICTED_COMMANDS, SERVER_RULES } from './config.js';
+import { RESTRICTED_COMMANDS, RUN_START_PING, SERVER_RULES } from './config.js';
 import {
   BENCH,
   JOBS,
@@ -44,7 +44,13 @@ import {
 import { allRuns, deleteRun, findRunById, getRun, newRunId, setRun } from './runs.js';
 import { parseTime } from './time.js';
 import { autocompleteZones, getUserZone, resolveZone, setUserZone } from './timezones.js';
-import { clearPreference, getPreference, setPreference } from './preferences.js';
+import {
+  clearPreference,
+  getPreference,
+  getReminderMinutes,
+  setPreference,
+  setReminderMinutes,
+} from './preferences.js';
 
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
 if (!DISCORD_TOKEN) {
@@ -54,6 +60,10 @@ if (!DISCORD_TOKEN) {
 
 // A completed run's private channel is deleted this long after /managerun marks it completed.
 const CHANNEL_DELETE_DELAY_MS = 3 * 60 * 60 * 1000;
+
+// DM reminder choices offered in /setpreference.
+const REMINDER_OPTIONS = [60, 30, 15, 10, 5];
+const reminderLabel = (m) => (m === 60 ? '1 hour before' : `${m} minutes before`);
 
 // ---------------------------------------------------------------------------
 // Slash command definitions
@@ -287,6 +297,22 @@ function manageButtons(messageId, run) {
         .setStyle(ButtonStyle.Secondary),
     ),
   ];
+}
+
+/** Multi-select for DM reminder timing. Saves immediately, no separate confirm step. */
+function reminderMenu(selected = []) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId('remind:select')
+      .setPlaceholder('DM reminders before runs you\'re signed up for')
+      .setMinValues(0)
+      .setMaxValues(REMINDER_OPTIONS.length)
+      .addOptions(REMINDER_OPTIONS.map((m) => ({
+        label: reminderLabel(m),
+        value: String(m),
+        default: selected.includes(m),
+      }))),
+  );
 }
 
 function rescheduleModal(messageId, run) {
@@ -559,6 +585,59 @@ function renameDayChannel(run, date) {
   fetchPrivateChannel(run)
     .then((channel) => channel?.setName(dayChannelName(run.title, date), `Merc run ${run.runId} rescheduled`))
     .catch((err) => console.error(`Couldn't rename the channel for run ${run.runId}:`, err.message));
+}
+
+/** Posts the "starting soon" role ping in a run's private channel, once. */
+async function sendRolePing(run, roleId) {
+  const channel = await client.channels.fetch(run.privateChannelId);
+  await channel.send({
+    content: `<@&${roleId}> Run is starting <t:${run.startsAt}:R>! PF will be up shortly.`,
+    allowedMentions: { roles: [roleId] },
+  });
+}
+
+/** DMs one user a reminder for a run they're signed up for. */
+async function sendDmReminder(run, userId, minutes) {
+  const user = await client.users.fetch(userId);
+  await user.send(
+    `⏰ Reminder: **${run.title ?? run.header}** starts <t:${run.startsAt}:R> (${reminderLabel(minutes)}).`,
+  );
+}
+
+// Role ping and DM reminders for runs starting soon. Runs every minute alongside sweepChannels,
+// re-using the same timer instead of one per run, and tracks what's already been sent on the run
+// itself so a restart never sends a duplicate.
+async function sweepReminders() {
+  const now = Date.now();
+  for (const [messageId, run] of allRuns()) {
+    if (run.status !== 'open' || !run.startsAt) continue;
+    const msUntilStart = run.startsAt * 1000 - now;
+    if (msUntilStart <= 0) continue;
+
+    const rolePing = RUN_START_PING[run.guildId];
+    if (rolePing && run.privateChannelId && !run.rolePingSent &&
+        msUntilStart <= rolePing.minutesBefore * 60 * 1000) {
+      run.rolePingSent = true;
+      setRun(messageId, run);
+      await sendRolePing(run, rolePing.roleId)
+        .catch((err) => console.error(`Couldn't send the start ping for run ${run.runId}:`, err.message));
+    }
+
+    for (const signup of run.signups) {
+      const minutes = getReminderMinutes(signup.userId);
+      if (!minutes.length) continue;
+      const sent = run.dmRemindersSent?.[signup.userId] ?? [];
+      const due = minutes.filter((m) => !sent.includes(m) && msUntilStart <= m * 60 * 1000);
+      if (!due.length) continue;
+
+      run.dmRemindersSent = { ...run.dmRemindersSent, [signup.userId]: [...sent, ...due] };
+      setRun(messageId, run);
+      for (const m of due) {
+        await sendDmReminder(run, signup.userId, m)
+          .catch((err) => console.error(`Couldn't DM a reminder to ${signup.userId} for run ${run.runId}:`, err.message));
+      }
+    }
+  }
 }
 
 // Delete private channels whose 3-hour countdown has run out. Runs every minute, so pending
@@ -978,6 +1057,8 @@ async function handleRescheduleSubmit(interaction, messageId) {
     run.status = 'open';
     run.rescheduled = true;
     run.channelDeleteAt = null;
+    run.rolePingSent = false;
+    run.dmRemindersSent = {};
     const postExists = await updatePost(messageId, run);
     setRun(messageId, run);
 
@@ -1395,9 +1476,25 @@ async function handleSetPreference(interaction) {
     return interaction.reply(ephemeral(needRoleText(interaction, 'preferenceRoles', 'use `/setpreference`')));
   }
   const saved = getPreference(interaction.user.id);
-  return interaction.reply({
+  await interaction.reply({
     ...prefView(interaction.user.id, saved?.values ?? [], saved?.jobs ?? []),
     flags: MessageFlags.Ephemeral,
+  });
+  await interaction.followUp({
+    content: "Want a DM before runs you're signed up for start? Pick one or more times (or clear to turn it off).",
+    components: [reminderMenu(getReminderMinutes(interaction.user.id))],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleReminderSelect(interaction) {
+  const minutes = interaction.values.map(Number).sort((a, b) => b - a);
+  setReminderMinutes(interaction.user.id, minutes);
+  return interaction.update({
+    content: minutes.length
+      ? `✅ You'll get a DM ${minutes.map(reminderLabel).join(' and ')} before runs you're signed up for.`
+      : 'DM reminders are off.',
+    components: [reminderMenu(minutes)],
   });
 }
 
@@ -1482,7 +1579,9 @@ client.once(Events.ClientReady, async (c) => {
   await registerCommands(c);
   await sweepChannels();
   await pruneRuns();
+  await sweepReminders();
   setInterval(sweepChannels, 60 * 1000);
+  setInterval(() => sweepReminders().catch((err) => console.error('sweepReminders failed:', err.message)), 60 * 1000);
 });
 
 client.on(Events.ChannelDelete, (channel) => forgetRunForChannel(channel.id));
@@ -1564,6 +1663,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'run' && ['select', 'jobs-tank', 'jobs-melee', 'jobs-opt'].includes(action)) {
         return await handleSelect(interaction, messageId, action);
       }
+      if (ns === 'remind' && action === 'select') return await handleReminderSelect(interaction);
       return;
     }
 

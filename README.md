@@ -103,6 +103,10 @@ menus as Sign up. After that, pressing **Sign up** on a run you haven't joined o
 filled in and shows where you'd land, so you just press **Confirm**, or change it first.
 Run `/setpreference` again to change it, or press **Clear preference** to remove it.
 
+`/setpreference` also sends a second message where you can pick one or more times (5 to 60 minutes
+before a run starts) to get a DM reminder. It only reminds you about runs you're signed up for, and
+saves as soon as you pick, so there's nothing else to confirm. Clear the selection to turn it off.
+
 ### Who gets priority
 
 First come, first served. Nobody can take a slot away from someone who signed up before them.
@@ -173,6 +177,10 @@ The bot needs **Manage Channels** and **Manage Roles** to create run channels, a
 **Mention @everyone, @here and All Roles** for the ping. The invite link above already includes them.
 If you added the bot before, give its role those permissions in Server Settings.
 
+On servers set up for it (see `RUN_START_PING` in [src/config.js](src/config.js)), the bot also pings a
+role in the run's private channel 30 minutes before it starts, e.g. "Run is starting in 30 minutes!
+ PF will be up shortly."
+
 ## Role restrictions
 
 A server can limit who creates runs and who signs up. These rules are set in [src/config.js](src/config.js):
@@ -192,7 +200,7 @@ Servers that aren't listed have no restrictions.
 | `/createrun-test` | (Disabled) Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
 | `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
 | `/settimezone` | Save or change your timezone |
-| `/setpreference` | Save your usual roles and jobs so Sign up is filled in for you |
+| `/setpreference` | Save your usual roles and jobs so Sign up is filled in for you, and choose when you get DM reminders |
 
 ---
 

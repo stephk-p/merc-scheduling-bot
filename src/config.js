@@ -15,5 +15,12 @@ export const SERVER_RULES = {
   },
 };
 
+// Per-server "run starting soon" ping, posted in the run's private channel.
+//   roleId        - role pinged
+//   minutesBefore - how long before the run's start time the ping goes out
+export const RUN_START_PING = {
+  '1529143174872825916': { roleId: '1529562550348288040', minutesBefore: 30 },
+};
+
 /** Commands that are limited by `commandRoles`. */
 export const RESTRICTED_COMMANDS = ['createrun', 'createrun-test', 'managerun'];

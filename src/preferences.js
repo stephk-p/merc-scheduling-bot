@@ -32,13 +32,28 @@ export function getPreference(userId) {
 }
 
 export function setPreference(userId, values, jobs) {
-  load()[userId] = { values, jobs };
+  const data = load();
+  data[userId] = { ...data[userId], values, jobs };
   save();
 }
 
+// Clearing the role preference keeps any saved reminder preference, since they're independent settings.
 export function clearPreference(userId) {
-  if (load()[userId]) {
-    delete store[userId];
-    save();
-  }
+  const data = load();
+  const existing = data[userId];
+  if (!existing) return;
+  if (existing.remindMinutes?.length) data[userId] = { remindMinutes: existing.remindMinutes };
+  else delete data[userId];
+  save();
+}
+
+/** @returns {number[]} minutes-before-start the user wants a DM reminder, e.g. [30, 10] */
+export function getReminderMinutes(userId) {
+  return load()[userId]?.remindMinutes ?? [];
+}
+
+export function setReminderMinutes(userId, minutes) {
+  const data = load();
+  data[userId] = { ...data[userId], remindMinutes: minutes };
+  save();
 }
