@@ -177,9 +177,9 @@ The bot needs **Manage Channels** and **Manage Roles** to create run channels, a
 **Mention @everyone, @here and All Roles** for the ping. The invite link above already includes them.
 If you added the bot before, give its role those permissions in Server Settings.
 
-On servers set up for it (see `RUN_START_PING` in [src/config.js](src/config.js)), the bot also pings a
+On servers set up for it (see `RUN_START_PING` in [src/config.js](src/config.js)), the bot pings a
 role in the run's private channel 30 minutes before it starts, e.g. "Run is starting in 30 minutes!
- PF will be up shortly."
+ PF will be up shortly." Other servers get the same message and timing, pinging `@here` instead.
 
 ## Role restrictions
 

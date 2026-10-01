@@ -19,7 +19,7 @@ import {
   escapeMarkdown,
 } from 'discord.js';
 import { DateTime } from 'luxon';
-import { RESTRICTED_COMMANDS, RUN_START_PING, SERVER_RULES } from './config.js';
+import { RESTRICTED_COMMANDS, RUN_START_PING, DEFAULT_RUN_START_PING, SERVER_RULES } from './config.js';
 import {
   BENCH,
   JOBS,
@@ -590,12 +590,13 @@ function renameDayChannel(run, date) {
     .catch((err) => console.error(`Couldn't rename the channel for run ${run.runId}:`, err.message));
 }
 
-/** Posts the "starting soon" role ping in a run's private channel, once. */
+/** Posts the "starting soon" ping in a run's private channel, once. roleId null means @here. */
 async function sendRolePing(run, roleId) {
   const channel = await client.channels.fetch(run.privateChannelId);
+  const mention = roleId ? `<@&${roleId}>` : '@here';
   await channel.send({
-    content: `<@&${roleId}> Run is starting <t:${run.startsAt}:R>! PF will be up shortly.`,
-    allowedMentions: { roles: [roleId] },
+    content: `${mention} Run is starting <t:${run.startsAt}:R>! PF will be up shortly.`,
+    allowedMentions: roleId ? { roles: [roleId] } : { parse: ['everyone'] },
   });
 }
 
@@ -617,8 +618,8 @@ async function sweepReminders() {
     const msUntilStart = run.startsAt * 1000 - now;
     if (msUntilStart <= 0) continue;
 
-    const rolePing = RUN_START_PING[run.guildId];
-    if (rolePing && run.privateChannelId && !run.rolePingSent &&
+    const rolePing = RUN_START_PING[run.guildId] ?? DEFAULT_RUN_START_PING;
+    if (run.privateChannelId && !run.rolePingSent &&
         msUntilStart <= rolePing.minutesBefore * 60 * 1000) {
       run.rolePingSent = true;
       setRun(messageId, run);
