@@ -194,6 +194,11 @@ A server can limit who creates runs and who signs up. These rules are set in [sr
 
 Servers that aren't listed have no restrictions.
 
+An admin (Administrator permission) can also use `/permissions` to grant or revoke `/createrun`,
+`/managerun`, `/runs` or `/setpreference` access for a specific role or member, on top of the rules
+above — handy for one-off helpers without changing `commandRoles` itself. `/permissions list` shows
+every extra grant in the server.
+
 ## Commands
 
 | Command | What it does |
@@ -201,9 +206,11 @@ Servers that aren't listed have no restrictions.
 | `/createrun` | Post a new run and create its private channel |
 | `/createrun-test` | (Disabled) Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
 | `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
-| `/runs` | List current runs by name with a link to each private channel (no post content) |
+| `/runs` | List current runs by name, clearee, date and a link to each private channel (no post content) |
 | `/settimezone` | Save or change your timezone |
 | `/setpreference` | Save your usual roles and jobs so Sign up is filled in for you, and choose when you get DM reminders |
+| `/help` | How to sign up for runs and which commands you can use in this server |
+| `/permissions` | Admins only: grant or revoke a role/member's access to restricted commands |
 
 ---
 
