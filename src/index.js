@@ -1426,9 +1426,11 @@ async function handleListRuns(interaction) {
 /**
  * Attaches a Merc Run ID to a run someone posted by hand (not through /createrun), so the bot
  * starts managing it like any other run: DM reminders, the "starting soon"/active-roster role,
- * deleting the private channel on completion, /managerun, all of it. Reuses the same roster
- * parsing already used to recover runs when saved data is lost, so sign-ups, the waitlist and the
- * bench are only picked up if the post used real @mentions, same as the bot's own posts do.
+ * deleting the private channel on completion, /managerun, all of it. Since the bot can only edit
+ * messages it posted itself, it reposts a fresh copy right away and manages that one from then on
+ * — the original post is left alone and stops updating. Reuses the same roster parsing already
+ * used to recover runs when saved data is lost, so sign-ups, the waitlist and the bench are only
+ * picked up if the post used real @mentions, same as the bot's own posts do.
  */
 async function handleAdoptRun(interaction) {
   if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
@@ -1436,8 +1438,6 @@ async function handleAdoptRun(interaction) {
   const messageId = interaction.options.getString('message_id', true).trim();
   const privateChannel = interaction.options.getChannel('private_channel', true);
   const timeInput = interaction.options.getString('time')?.trim();
-
-  if (getRun(messageId)) return interaction.reply(ephemeral('That message is already a tracked run.'));
 
   const channel = interaction.channel ?? (await client.channels.fetch(interaction.channelId).catch(() => null));
   const post = channel && (await channel.messages.fetch(messageId).catch(() => null));
@@ -1486,15 +1486,48 @@ async function handleAdoptRun(interaction) {
     extraCleareePinged: false,
   };
 
-  setRun(post.id, run);
+  // The bot can only ever edit messages it posted itself, so it reposts a copy to manage from
+  // here on — the original stays as-is and stops updating.
+  const rendered = render(run);
+  run.placed = rendered.placed;
+  let newPost;
+  try {
+    newPost = await channel.send({
+      content: rendered.content,
+      components: [runButtons()],
+      allowedMentions: { parse: [] },
+    });
+  } catch (err) {
+    console.error(`Couldn't repost run ${runId} during adoption:`, err);
+    return interaction.reply(ephemeral(`Couldn't post a copy here: ${err.message}`));
+  }
+
+  setRun(newPost.id, run);
   await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
   for (const userId of channelMembers(run)) await addToPrivateChannel(run, userId);
 
+  // Pinned roster copy in the private channel, same as /createrun.
+  const copy = await privateChannel.send({
+    content: rosterCopyContent(run, rendered.content),
+    allowedMentions: { parse: [] },
+  }).catch((err) => {
+    console.error(`Couldn't post the roster copy for run ${runId}:`, err.message);
+    return null;
+  });
+  if (copy) {
+    run.rosterCopyId = copy.id;
+    setRun(newPost.id, run);
+    await copy.pin('Run roster').catch(() => {});
+  }
+
   const signupCount = run.signups.length;
   return interaction.reply({
-    content: `✅ Attached Merc Run ID **${runId}** to that post, linked to <#${privateChannel.id}>. ` +
-      `${signupCount ? `Picked up ${signupCount} sign-up(s) from the post. ` : "Found no sign-ups in the post (only real @mentions are recognized) — add them with \`/managerun\`'s Edit roster. "}` +
-      `Use \`/managerun run_id:${runId}\` to manage it from here on, same as any other run.`,
+    content: `✅ Reposted this run as Merc Run ID **${runId}**: ${newPost.url}\n` +
+      `Linked to <#${privateChannel.id}>. ` +
+      `${signupCount ? `Picked up ${signupCount} sign-up(s) from the original post. ` :
+        "Found no sign-ups in the original post (only real @mentions are recognized) — add them with `/managerun`'s Edit roster. "}` +
+      `The original post won't update anymore since I can only edit messages I posted myself — feel free to delete it. ` +
+      `Use \`/managerun run_id:${runId}\` to manage the new one from here on.`,
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });
