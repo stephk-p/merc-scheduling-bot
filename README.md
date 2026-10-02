@@ -75,7 +75,10 @@ else, it just replies telling you which channel to use), and its post never ping
 ## Signing up
 
 Click **✅ Sign up** under a run, choose from the menu and press **Confirm**. Click **❌ Leave** to drop out.
-Clicking Sign up again lets you change your pick.
+Clicking Sign up again lets you change your pick. If `signupRoles` (below) limits who can sign up, that only
+applies to joining in the first place — once you're on the roster you can always manage your own pick with
+**Sign up** or **🛠️ Manage Signup** (handy if you were added by someone else and aren't in `signupRoles`
+yourself). Manage Signup does nothing at all if you're not already signed up for that run.
 
 You can choose:
 
@@ -180,6 +183,8 @@ You can start typing the ID or the run name and pick it from the list. You get t
 | **Delete run** | Deletes the post and the channel right away (asks you to confirm first). |
 
 If a run's private channel is deleted, whether by the bot or by hand, the run is removed from `/managerun` too.
+If the run **post** is deleted instead, the next action taken on it (from `/managerun` or a sign-up) reposts a
+fresh copy automatically and keeps managing that one, since the bot can only edit messages it posted itself.
 
 ### Adopting a manually posted run
 

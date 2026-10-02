@@ -238,6 +238,8 @@ function runButtons(disabled = false) {
       .setDisabled(disabled),
     new ButtonBuilder().setCustomId('run:leave').setLabel('Leave').setEmoji('❌').setStyle(ButtonStyle.Secondary)
       .setDisabled(disabled),
+    new ButtonBuilder().setCustomId('run:manage').setLabel('Manage Signup').setEmoji('🛠️')
+      .setStyle(ButtonStyle.Secondary).setDisabled(disabled),
   );
 }
 
@@ -1537,20 +1539,38 @@ async function handleAdoptRun(interaction) {
 // /managerun actions
 // ---------------------------------------------------------------------------
 
-/** Re-render the run post from saved state. Returns false if the post no longer exists. */
+/**
+ * Re-renders the run post. If it's gone (deleted by hand, or from an old /adoptrun before the bot
+ * could only edit its own messages), reposts a fresh copy in the same channel and moves the run
+ * under that new message ID so it keeps working. Returns the ID to keep using from here on, or
+ * null if even reposting failed (e.g. the channel itself is gone).
+ */
 async function updatePost(messageId, run) {
   const channel = await client.channels.fetch(run.channelId).catch(() => null);
-  const post = channel && (await channel.messages.fetch(messageId).catch(() => null));
-  if (!post) return false;
+  if (!channel) return null;
+
   const rendered = render(run);
   run.placed = rendered.placed;
-  await post.edit({
-    content: rendered.content,
-    components: [runButtons(isClosed(run))],
-    allowedMentions: { parse: [] },
+  const content = rendered.content;
+  const components = [runButtons(isClosed(run))];
+
+  const post = await channel.messages.fetch(messageId).catch(() => null);
+  if (post) {
+    await post.edit({ content, components, allowedMentions: { parse: [] } });
+    await syncRosterCopy(run, content);
+    return messageId;
+  }
+
+  const fresh = await channel.send({ content, components, allowedMentions: { parse: [] } }).catch((err) => {
+    console.error(`Couldn't repost the missing post for run ${run.runId}:`, err.message);
+    return null;
   });
-  await syncRosterCopy(run, rendered.content);
-  return true;
+  if (!fresh) return null;
+
+  deleteRun(messageId);
+  setRun(fresh.id, run);
+  await syncRosterCopy(run, content);
+  return fresh.id;
 }
 
 async function closeRun(interaction, messageId, status) {
@@ -1563,10 +1583,10 @@ async function closeRun(interaction, messageId, status) {
     run.channelDeleteAt = status === 'completed' && run.privateChannelId
       ? Date.now() + CHANNEL_DELETE_DELAY_MS
       : null;
-    const postExists = await updatePost(messageId, run);
+    const postId = await updatePost(messageId, run);
     // A completed run with no channel left to clean up is forgotten right away.
-    if (status === 'completed' && !run.privateChannelId) deleteRun(messageId);
-    else setRun(messageId, run);
+    if (status === 'completed' && !run.privateChannelId) deleteRun(postId ?? messageId);
+    else setRun(postId ?? messageId, run);
     // run.status is no longer 'open', so this only strips the role if no other run grants it.
     await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
 
@@ -1579,7 +1599,7 @@ async function closeRun(interaction, messageId, status) {
     } else {
       reply = `Run **${run.runId}** marked as failed. Sign-ups are closed until it's rescheduled.`;
     }
-    if (!postExists) reply += '\n(The run post was deleted, so only the saved record was updated.)';
+    if (!postId) reply += "\n(The run post was deleted and a fresh copy couldn't be posted — only the saved record was updated.)";
     return interaction.editReply({ content: reply, components: [] });
   });
 }
@@ -1672,15 +1692,15 @@ async function handleRescheduleSubmit(interaction, messageId) {
     run.rolePingSent = false;
     run.dmRemindersSent = {};
     run.startPromptSent = false;
-    const postExists = await updatePost(messageId, run);
-    setRun(messageId, run);
+    const postId = await updatePost(messageId, run);
+    setRun(postId ?? messageId, run);
     await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
 
     if (!showsRunId(run) && run.privateChannelId) renameDayChannel(run, parsed.date);
 
     let reply = `Run **${run.runId}** rescheduled to <t:${parsed.ts}:F>. Sign-ups are open again.`;
     if (!run.privateChannelId) reply += '\n(Its private channel was already deleted.)';
-    if (!postExists) reply += '\n(The run post was deleted, so only the saved record was updated.)';
+    if (!postId) reply += "\n(The run post was deleted and a fresh copy couldn't be posted — only the saved record was updated.)";
     return interaction.editReply({ content: reply, components: [] });
   });
 }
@@ -1733,8 +1753,8 @@ async function handleDetailsSubmit(interaction, messageId) {
     run.title = newTitle;
     run.header = newHeader;
 
-    const postExists = await updatePost(messageId, run);
-    setRun(messageId, run);
+    const postId = await updatePost(messageId, run);
+    setRun(postId ?? messageId, run);
     if (parsed) await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
 
     if ((titleChanged || parsed) && !showsRunId(run) && run.privateChannelId) {
@@ -1744,7 +1764,7 @@ async function handleDetailsSubmit(interaction, messageId) {
 
     let reply = `Run **${run.runId}** updated.`;
     if (parsed) reply += ` New time: <t:${parsed.ts}:F>.`;
-    if (!postExists) reply += '\n(The run post was deleted, so only the saved record was updated.)';
+    if (!postId) reply += "\n(The run post was deleted and a fresh copy couldn't be posted — only the saved record was updated.)";
     return interaction.editReply({ content: reply, components: [] });
   });
 }
@@ -1845,15 +1865,42 @@ function outcomeText(signup, rendered, preview = false, who = null) {
   return `${you} in **${p.role}**.`;
 }
 
-async function handleJoin(interaction) {
-  if (!hasRuleRole(interaction, 'signupRoles')) {
-    return interaction.reply(ephemeral(needRoleText(interaction, 'signupRoles', 'sign up for runs')));
-  }
-  const post = interaction.message;
-  const run = runFromPost(post);
+/**
+ * The "Manage Signup" button: a dedicated entry point for people already on the roster to adjust
+ * their own pick, bypassing signupRoles (membership itself is the authorization) — meant for cases
+ * like a clearee who isn't in signupRoles but is still part of the run. Does nothing at all for
+ * anyone not already signed up, rather than showing an error.
+ */
+async function handleManageSignup(interaction) {
+  const run = runFromPost(interaction.message);
+  const mine = run.signups.find((s) => s.userId === interaction.user.id);
+  if (!mine) return interaction.deferUpdate();
+
   if (isClosed(run)) return interaction.reply(ephemeral(closedMessage(run)));
 
+  const { status } = viewFor(run, interaction.user.id);
+  const current = `You're signed up as **${describeSignup(mine)}**` +
+    (mine.jobs?.length ? ` (${describeJobs(mine)})` : '') +
+    '. Picking again replaces that (and puts you at the back of the line).\n\n';
+
+  return interaction.reply({
+    content: current + PICK_HELP,
+    components: rolePicker('run', interaction.message.id, status, selectionValues(mine), mine.jobs ?? [],
+      checkSelection(mine).ok),
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleJoin(interaction) {
+  const post = interaction.message;
+  const run = runFromPost(post);
   const mine = run.signups.find((s) => s.userId === interaction.user.id);
+  // signupRoles only restricts new sign-ups; anyone already on the roster can always manage their own pick.
+  if (!mine && !hasRuleRole(interaction, 'signupRoles')) {
+    return interaction.reply(ephemeral(needRoleText(interaction, 'signupRoles', 'sign up for runs')));
+  }
+  if (isClosed(run)) return interaction.reply(ephemeral(closedMessage(run)));
+
   const { others, status } = viewFor(run, interaction.user.id);
 
   // Not signed up yet: fill the picker in from their saved preference so one click on Confirm signs them up.
@@ -1907,8 +1954,6 @@ async function handleSelect(interaction, messageId, kind, targetId = null) {
     const saved = getRun(messageId);
     if (!saved) return interaction.update({ content: 'That run no longer exists.', components: [] });
     if (!canManage(interaction, saved)) return interaction.update({ content: notManagerText(interaction), components: [] });
-  } else if (!hasRuleRole(interaction, 'signupRoles')) {
-    return interaction.update({ content: needRoleText(interaction, 'signupRoles', 'sign up for runs'), components: [] });
   }
   const { values, jobs } = nextPicks(interaction, kind);
 
@@ -1924,6 +1969,10 @@ async function handleSelect(interaction, messageId, kind, targetId = null) {
   }
 
   const userId = targetId ?? interaction.user.id;
+  // signupRoles only restricts new sign-ups; anyone already on the roster can always manage their own pick.
+  if (!targetId && !run.signups.some((s) => s.userId === userId) && !hasRuleRole(interaction, 'signupRoles')) {
+    return interaction.update({ content: needRoleText(interaction, 'signupRoles', 'sign up for runs'), components: [] });
+  }
   const who = targetId ? (labelsFor(run)[targetId] ?? `<@${targetId}>`) : null;
   const { others, status } = viewFor(run, userId);
   const signup = selectionToSignup(userId, values, jobs);
@@ -1950,9 +1999,6 @@ async function handleSelect(interaction, messageId, kind, targetId = null) {
 }
 
 async function handleConfirm(interaction, messageId, encodedValues, encodedJobs) {
-  if (!hasRuleRole(interaction, 'signupRoles')) {
-    return interaction.update({ content: needRoleText(interaction, 'signupRoles', 'sign up for runs'), components: [] });
-  }
   const values = decodeValues(encodedValues);
   const jobs = decodeJobs(encodedJobs);
 
@@ -1968,6 +2014,10 @@ async function handleConfirm(interaction, messageId, encodedValues, encodedJobs)
 
     const userId = interaction.user.id;
     const isNew = !run.signups.some((s) => s.userId === userId);
+    // signupRoles only restricts new sign-ups; anyone already on the roster can always manage their own pick.
+    if (isNew && !hasRuleRole(interaction, 'signupRoles')) {
+      return interaction.update({ content: needRoleText(interaction, 'signupRoles', 'sign up for runs'), components: [] });
+    }
     const others = run.signups.filter((s) => s.userId !== userId);
     const signup = selectionToSignup(userId, values, jobs);
     const check = checkSelection(signup);
@@ -2160,12 +2210,13 @@ async function handleEditConfirm(interaction, messageId, userId, encodedValues, 
     }
 
     run.signups = signups;
-    await updatePost(messageId, run);
-    setRun(messageId, run);
+    const postId = await updatePost(messageId, run);
+    const finalId = postId ?? messageId;
+    setRun(finalId, run);
     await syncActiveRosterRole(run.guildId, interaction.guild, signups.map((s) => s.userId));
     if (isNew && isUserId(userId)) await addToPrivateChannel(run, userId);
     const who = labelsFor(run)[userId] ?? `<@${userId}>`;
-    return interaction.editReply(await editPanel(interaction, messageId, run,
+    return interaction.editReply(await editPanel(interaction, finalId, run,
       outcomeText(signup, rendered, false, who)));
   });
 }
@@ -2182,8 +2233,9 @@ async function handleEditRemove(interaction, messageId) {
       return interaction.editReply(await editPanel(interaction, messageId, run, 'Nobody was removed.'));
     }
     run.signups = run.signups.filter((s) => !removed.includes(s));
-    await updatePost(messageId, run);
-    setRun(messageId, run);
+    const postId = await updatePost(messageId, run);
+    const finalId = postId ?? messageId;
+    setRun(finalId, run);
     await syncActiveRosterRole(run.guildId, interaction.guild,
       [...run.signups.map((s) => s.userId), ...removed.map((s) => s.userId)]);
     for (const s of removed) {
@@ -2192,7 +2244,7 @@ async function handleEditRemove(interaction, messageId) {
 
     const labels = labelsFor(run);
     const names = removed.map((s) => labels[s.userId] ?? `<@${s.userId}>`).join(', ');
-    return interaction.editReply(await editPanel(interaction, messageId, run, `✅ Removed ${names}.`));
+    return interaction.editReply(await editPanel(interaction, finalId, run, `✅ Removed ${names}.`));
   });
 }
 
@@ -2402,6 +2454,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns !== 'run') return;
       if (action === 'join') return await handleJoin(interaction);
       if (action === 'leave') return await handleLeave(interaction);
+      if (action === 'manage') return await handleManageSignup(interaction);
       if (action === 'confirm') return await handleConfirm(interaction, messageId, picks, jobs);
       return;
     }
