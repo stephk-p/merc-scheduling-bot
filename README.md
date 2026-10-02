@@ -208,9 +208,12 @@ it's submitted.
 
 - `/startprompt enable` / `/startprompt disable` turn it on or off for the server (off by default;
   see `START_PROMPT_ENABLED` in [src/config.js](src/config.js) for a code-level default instead).
-- `/startprompt role` optionally also pings a role in the run's private channel alongside the
-  creator's DM (nobody is pinged there by default). If that role can't already use `/createrun`,
-  it's automatically granted access to it (same as `/permissions grant`).
+- `/startprompt role` optionally also DMs everyone with a role, the same prompt the creator gets
+  (nobody extra is DMed by default). The creator only ever gets it once, even if they also have
+  that role. If the role can't already use `/createrun`, it's automatically granted access to it
+  (same as `/permissions grant`). This needs the **Server Members Intent** turned on for the bot in
+  the [Discord Developer Portal](https://discord.com/developers/applications) (Bot tab) — without
+  it, the role option won't find anyone to DM.
 
 ## Role restrictions
 

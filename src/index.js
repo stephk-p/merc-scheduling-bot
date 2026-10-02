@@ -207,8 +207,8 @@ const commands = [
     .addSubcommand((sc) => sc.setName('disable').setDescription('Turn the run-starting DM off for this server'))
     .addSubcommand((sc) => sc
       .setName('role')
-      .setDescription('Also ping a role in the private channel when a run starts (omit to clear it)')
-      .addRoleOption((o) => o.setName('role').setDescription('Role to ping (leave blank to clear)'))),
+      .setDescription("Also DM everyone with a role when a run starts (omit to clear it)")
+      .addRoleOption((o) => o.setName('role').setDescription('Role to DM (leave blank to clear)'))),
 ].map((c) => c.toJSON());
 
 // ---------------------------------------------------------------------------
@@ -786,33 +786,35 @@ async function sendDmReminder(run, userId, minutes) {
 }
 
 /**
- * DMs the run's creator when the scheduled time arrives, prompting them to mark it completed/
- * failed or reschedule it. If a role is assigned for this server (/startprompt role), it's also
- * pinged with the same buttons in the private channel. Same manage:complete/fail/reschedule
- * buttons /managerun uses, so clicking them is gated the same way (commandRoles, an admin, or a
- * /permissions grant) — Reschedule just opens that same modal and doesn't change anything until
- * it's submitted. The bot has no way to look up everyone with commandRoles without the privileged
- * Members intent, so without an assigned role this only reaches the creator.
+ * DMs the run's creator, plus anyone holding the role assigned for this server (/startprompt
+ * role), when the scheduled time arrives — prompting them to mark it completed/failed or
+ * reschedule it. Everyone is deduped first, so holding both never means two DMs. Same
+ * manage:complete/fail/reschedule buttons /managerun uses, so clicking them is gated the same way
+ * (commandRoles, an admin, or a /permissions grant) — Reschedule just opens that same modal and
+ * doesn't change anything until it's submitted.
  */
 async function sendStartPrompt(run, messageId) {
   const prompt = `**${runName(run)}** was scheduled to start <t:${run.startsAt}:R>. ` +
     'Mark it completed or failed, or reschedule it:';
 
-  if (isUserId(run.creatorId)) {
-    const user = await client.users.fetch(run.creatorId);
-    await user.send({ content: prompt, components: startPromptButtons(messageId) });
-  }
+  const userIds = new Set();
+  if (isUserId(run.creatorId)) userIds.add(run.creatorId);
 
   const roleId = getStartPromptSettings(run.guildId).roleId;
-  if (roleId && run.privateChannelId) {
-    const channel = await client.channels.fetch(run.privateChannelId).catch(() => null);
-    if (channel) {
-      await channel.send({
-        content: `<@&${roleId}> ${prompt}`,
-        components: startPromptButtons(messageId),
-        allowedMentions: { roles: [roleId] },
-      });
-    }
+  if (roleId) {
+    const guild = await client.guilds.fetch(run.guildId).catch(() => null);
+    // Requires the privileged Server Members intent (enabled below and in the Developer Portal);
+    // the role's member cache isn't populated without it.
+    if (guild) await guild.members.fetch().catch((err) => console.error(`Couldn't fetch members of ${guild.id}:`, err.message));
+    const role = guild?.roles.cache.get(roleId);
+    for (const member of role?.members.values() ?? []) userIds.add(member.id);
+  }
+
+  for (const userId of userIds) {
+    const user = await client.users.fetch(userId).catch(() => null);
+    if (!user) continue;
+    await user.send({ content: prompt, components: startPromptButtons(messageId) })
+      .catch((err) => console.error(`Couldn't DM the start prompt to ${userId}:`, err.message));
   }
 }
 
@@ -1239,7 +1241,7 @@ async function handleStartPrompt(interaction) {
   const role = interaction.options.getRole('role');
   if (!role) {
     setStartPromptRole(interaction.guildId, null);
-    return interaction.reply(ephemeral('Cleared. No role will be pinged for the run-starting prompt anymore.'));
+    return interaction.reply(ephemeral('Cleared. Nobody extra will be DMed for the run-starting prompt anymore.'));
   }
 
   let note = '';
@@ -1249,7 +1251,8 @@ async function handleStartPrompt(interaction) {
   }
   setStartPromptRole(interaction.guildId, role.id);
   return interaction.reply({
-    content: `✅ <@&${role.id}> will also be pinged in the private channel for the run-starting prompt.${note}`,
+    content: `✅ Everyone with <@&${role.id}> will also be DMed the run-starting prompt ` +
+      `(the creator only gets it once, even if they also have the role).${note}`,
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });
@@ -1915,7 +1918,9 @@ async function handlePrefButton(interaction, action, encodedValues, encodedJobs)
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// Requires the privileged "Server Members Intent" to also be turned on for this bot in the
+// Discord Developer Portal (Bot tab), or /startprompt's role option won't be able to find members.
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 // GUILD_ID controls where slash commands are registered:
 //   (empty)          -> globally: every server the bot is in (can take up to an hour to show)
