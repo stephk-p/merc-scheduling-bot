@@ -215,6 +215,12 @@ bench are picked up from the original post if they're real `@mentions` (same rec
 
 Only the person who created the run, or anyone with the Manage Channels permission, can use `/managerun` on it.
 
+If a run was adopted (or created) by mistake and you want the bot to stop managing it, use
+`/removeadoptedrun run_id:482915`. This only forgets the run's Merc Run ID and saved roster from the bot — the
+run post, its private channel, every message in it, and everyone's access are all left exactly as they are. It
+asks you to confirm first, since the bot can't pick the run back up afterward (you'd need to `/adoptrun` it
+again). Same permissions as `/managerun`.
+
 The bot needs **Manage Channels** and **Manage Roles** to create run channels, and
 **Mention @everyone, @here and All Roles** for the ping. The invite link above already includes them.
 If you added the bot before, give its role those permissions in Server Settings. For
@@ -281,6 +287,7 @@ them admins. `/permissions list` shows every extra grant in the server.
 | `/createrun-test` | (Disabled) Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
 | `/privaterun` | Same as `/createrun`, but restricted to one channel and never pings anyone |
 | `/adoptrun` | Attach a Merc Run ID to a manually posted run so the bot can manage it |
+| `/removeadoptedrun` | Stop tracking a run without touching its post, channel, messages or permissions |
 | `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
 | `/runs` | List current runs by name, clearee, date and a link to each private channel (no post content) |
 | `/settimezone` | Save or change your timezone |

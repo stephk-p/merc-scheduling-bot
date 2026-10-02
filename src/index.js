@@ -85,13 +85,14 @@ const reminderLabel = (m) => (m === 60 ? '1 hour before' : `${m} minutes before`
 
 // Commands an admin can grant/revoke access to for a specific role or member via /permissions,
 // on top of the server's normal commandRoles/preferenceRoles.
-const GRANTABLE_COMMANDS = ['createrun', 'privaterun', 'adoptrun', 'managerun', 'runs', 'setpreference'];
+const GRANTABLE_COMMANDS = ['createrun', 'privaterun', 'adoptrun', 'managerun', 'runs', 'setpreference', 'removeadoptedrun'];
 
 const COMMAND_BLURBS = {
   createrun: 'Post a new run and create its private channel',
   privaterun: 'Like /createrun, but restricted to one channel, and never pings anyone',
   adoptrun: "Attach a Merc Run ID to a manually posted run so the bot can manage it",
   managerun: 'Mark a run completed or failed, reschedule it, edit its roster, or delete it',
+  removeadoptedrun: "Stop tracking a run (keeps its channel, permissions and messages untouched)",
   runs: 'List current runs and their private channels',
   setpreference: 'Save your usual roles/jobs and choose DM reminder times',
   settimezone: 'Save or change your timezone',
@@ -188,8 +189,7 @@ const commands = [
         .setMaxLength(100)),
   new SlashCommandBuilder()
     .setName('setpreference')
-    .setDescription('Save your usual roles and jobs so Sign up is filled in for you'),
-  new SlashCommandBuilder()
+    .setDescription('Save your usual roles and jobs so Sign up is filled in for you'),  new SlashCommandBuilder()
     .setName('settimezone')
     .setDescription('Save your timezone so /createrun understands your times')
     .addStringOption((o) =>
@@ -235,6 +235,16 @@ const commands = [
     .addStringOption((o) =>
       o.setName('run_id')
         .setDescription('Only fix this run (leave blank to check every run)')
+        .setMinLength(6)
+        .setMaxLength(6)
+        .setAutocomplete(true)),
+  new SlashCommandBuilder()
+    .setName('removeadoptedrun')
+    .setDescription("Stop tracking a run (keeps its channel, permissions and messages untouched)")
+    .addStringOption((o) =>
+      o.setName('run_id')
+        .setDescription('The 6-digit Merc Run ID')
+        .setRequired(true)
         .setMinLength(6)
         .setMaxLength(6)
         .setAutocomplete(true)),
@@ -1641,6 +1651,51 @@ async function handleAdoptRun(interaction) {
   });
 }
 
+/**
+ * The reverse of /adoptrun: forgets a run's Merc Run ID and saved roster so the bot stops managing
+ * it, without touching the run post, the private channel, its messages, or anyone's access to it.
+ */
+async function handleRemoveAdoptedRun(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+
+  const runId = interaction.options.getString('run_id', true).trim();
+  const found = findRunById(interaction.guildId, runId);
+  if (!found) return interaction.reply(ephemeral(`No run found with ID **${runId}** in this server.`));
+  if (!canManage(interaction, found.run)) return interaction.reply(ephemeral(notManagerText(interaction)));
+
+  return interaction.reply({
+    content: `Stop tracking run **${runId}**? This removes its Merc Run ID and saved roster from the bot only — ` +
+      "no more /managerun, reminders, or pings for it. The run post, private channel, its messages and everyone's " +
+      "access are all left exactly as they are, and can't be recovered by the bot afterward.",
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`rmadopt:yes:${found.messageId}`).setLabel('Yes, stop tracking it')
+          .setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId(`rmadopt:cancel:${found.messageId}`).setLabel('Cancel')
+          .setStyle(ButtonStyle.Secondary),
+      ),
+    ],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleRemoveAdoptedRunButton(interaction, action, messageId) {
+  if (action === 'cancel') return interaction.update({ content: 'Cancelled.', components: [] });
+
+  const run = getRun(messageId);
+  if (!run) return interaction.update({ content: "That run isn't tracked anymore.", components: [] });
+  if (!canManage(interaction, run)) return interaction.update({ content: notManagerText(interaction), components: [] });
+
+  deleteRun(messageId);
+  // Only strips the active-roster role if no other run grants it; nothing else about the channel changes.
+  await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
+  return interaction.update({
+    content: `✅ Run **${run.runId}** is no longer tracked. Its post, private channel, messages and everyone's ` +
+      'access were left untouched.',
+    components: [],
+  });
+}
+
 // ---------------------------------------------------------------------------
 // /managerun actions
 // ---------------------------------------------------------------------------
@@ -1884,11 +1939,15 @@ function autocompleteRuns(interaction, query) {
   const zone = getUserZone(interaction.user.id) ?? 'UTC';
   // /fixrun is admin-only (checked by Discord via setDefaultMemberPermissions) and can target a
   // completed run whose private channel hasn't been deleted yet, so it skips the /managerun-only filters.
+  // /removeadoptedrun shares that same "completed run, channel still around" case, but still requires
+  // being able to manage the run.
   const isFixRun = interaction.commandName === 'fixrun';
+  const skipStatusFilter = isFixRun || interaction.commandName === 'removeadoptedrun';
   return allRuns()
     .map(([, run]) => run)
     .filter((run) => run.runId && run.guildId === interaction.guildId &&
-      (isFixRun || (run.status !== 'completed' && canManage(interaction, run))))
+      (isFixRun || canManage(interaction, run)) &&
+      (skipStatusFilter || run.status !== 'completed'))
     .filter((run) => !q || run.runId.startsWith(q) || (run.title ?? '').toLowerCase().includes(q))
     .sort((a, b) => (b.startsAt ?? 0) - (a.startsAt ?? 0))
     .slice(0, 25)
@@ -2533,6 +2592,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
           return await handleCreateRun(interaction, { noPing: true, requiredChannelId: PRIVATE_RUN_CHANNEL_ID });
         case 'adoptrun': return await handleAdoptRun(interaction);
         case 'managerun': return await handleManageRun(interaction);
+        case 'removeadoptedrun': return await handleRemoveAdoptedRun(interaction);
         case 'runs': return await handleListRuns(interaction);
         case 'settimezone': return await handleSetTimezone(interaction);
         case 'setpreference': return await handleSetPreference(interaction);
@@ -2565,6 +2625,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const [ns, action, messageId, picks, jobs] = interaction.customId.split(':');
       if (ns === 'pref') return await handlePrefButton(interaction, action, picks, jobs);
       if (ns === 'manage') return await handleManageButton(interaction, action, messageId);
+      if (ns === 'rmadopt') return await handleRemoveAdoptedRunButton(interaction, action, messageId);
       if (ns !== 'run') return;
       if (action === 'join') return await handleJoin(interaction);
       if (action === 'leave') return await handleLeave(interaction);

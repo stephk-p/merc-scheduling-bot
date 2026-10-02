@@ -56,5 +56,7 @@ export const RUN_CHANNEL_CATEGORY = {
 export const PRIVATE_RUN_CHANNEL_ID = '1555479625851732028';
 
 /** Commands that are limited by `commandRoles`. */
-export const RESTRICTED_COMMANDS = ['createrun', 'createrun-test', 'privaterun', 'adoptrun', 'managerun', 'runs'];
+export const RESTRICTED_COMMANDS = [
+  'createrun', 'createrun-test', 'privaterun', 'adoptrun', 'managerun', 'runs', 'removeadoptedrun',
+];
 
