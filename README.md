@@ -190,9 +190,10 @@ itself — including picking up a roster copy a run already had (from before thi
 `/adoptrun`) instead of posting a duplicate, or posting one for the first time if it's missing. This is
 checked once a minute for every run, not just when something changes, so an old `/adoptrun` with no roster
 copy yet gets one without needing any action taken on it first. Admins can also run `/fixrun` to check every
-run right away instead of waiting for the next check. Either way, it only ever posts the plain roster message
-in the private channel — never a copy of the Sign up/Leave/Manage Signup post, which only ever exists where
-`/createrun`, `/privaterun` or `/adoptrun` posted it.
+run right away instead of waiting for the next check, or fill in its optional `run_id` to only check one run.
+Either way, it only ever posts the plain roster message in the private channel — never a copy of the
+Sign up/Leave/Manage Signup post, which only ever exists where `/createrun`, `/privaterun` or `/adoptrun`
+posted it.
 
 ### Adopting a manually posted run
 
@@ -287,7 +288,7 @@ them admins. `/permissions list` shows every extra grant in the server.
 | `/help` | How to sign up for runs and which commands you can use in this server |
 | `/permissions` | Admins only: grant or revoke a role/member's access to restricted commands |
 | `/startprompt` | Admins only: turn the run-starting DM on/off, and optionally assign a role to ping |
-| `/fixrun` | Admins only: scan every run and repost a missing roster copy in its private channel |
+| `/fixrun` | Admins only: scan every run (or just one, with `run_id`) and repost a missing roster copy in its private channel |
 
 ---
 

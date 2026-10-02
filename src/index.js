@@ -231,7 +231,13 @@ const commands = [
   new SlashCommandBuilder()
     .setName('fixrun')
     .setDescription("Scan every run in this server and repost a missing roster copy in its private channel")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption((o) =>
+      o.setName('run_id')
+        .setDescription('Only fix this run (leave blank to check every run)')
+        .setMinLength(6)
+        .setMaxLength(6)
+        .setAutocomplete(true)),
 ].map((c) => c.toJSON());
 
 // ---------------------------------------------------------------------------
@@ -1436,23 +1442,35 @@ async function handleStartPrompt(interaction) {
 }
 
 /**
- * Scans every run in this server with a private channel and recovers a missing roster copy —
- * never the main run post itself, and never with Sign up/Leave/Manage Signup buttons, since
- * `ensureRosterCopy`/`syncRosterCopy` only ever post into the private channel without components.
+ * Scans every run in this server with a private channel (or just one, if `run_id` is given) and
+ * recovers a missing roster copy — never the main run post itself, and never with Sign up/Leave/
+ * Manage Signup buttons, since `ensureRosterCopy`/`syncRosterCopy` only ever post into the private
+ * channel without components.
  */
 async function handleFixRun(interaction) {
   if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
     return interaction.reply(ephemeral('Only server administrators can use `/fixrun`.'));
   }
+
+  const runId = interaction.options.getString('run_id')?.trim();
+  let targets;
+  if (runId) {
+    const found = findRunById(interaction.guildId, runId);
+    if (!found) return interaction.reply(ephemeral(`No run found with ID **${runId}** in this server.`));
+    if (!found.run.privateChannelId) {
+      return interaction.reply(ephemeral(`Run **${runId}** doesn't have a private channel to check.`));
+    }
+    targets = [[found.messageId, found.run]];
+  } else {
+    targets = allRuns().filter(([, run]) => run.guildId === interaction.guildId && run.privateChannelId);
+  }
+
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  let checked = 0;
   let fixed = 0;
   let failed = 0;
-  for (const [messageId, run] of allRuns()) {
-    if (run.guildId !== interaction.guildId || !run.privateChannelId) continue;
-    checked++;
+  for (const [messageId, run] of targets) {
     const hadCopy = Boolean(run.rosterCopyId);
     try {
       await ensureRosterCopy(messageId, run);
@@ -1463,7 +1481,7 @@ async function handleFixRun(interaction) {
     }
   }
 
-  const parts = [`Checked ${checked} run(s) with a private channel.`];
+  const parts = [`Checked ${targets.length} run(s) with a private channel.`];
   parts.push(fixed ? `Posted a missing roster copy for ${fixed} of them.` : 'Every roster copy was already there.');
   if (failed) parts.push(`${failed} couldn't be checked — see the console for details.`);
   return interaction.editReply(parts.join(' '));
@@ -1864,10 +1882,13 @@ async function handleDetailsSubmit(interaction, messageId) {
 function autocompleteRuns(interaction, query) {
   const q = query.trim().toLowerCase();
   const zone = getUserZone(interaction.user.id) ?? 'UTC';
+  // /fixrun is admin-only (checked by Discord via setDefaultMemberPermissions) and can target a
+  // completed run whose private channel hasn't been deleted yet, so it skips the /managerun-only filters.
+  const isFixRun = interaction.commandName === 'fixrun';
   return allRuns()
     .map(([, run]) => run)
-    .filter((run) => run.runId && run.guildId === interaction.guildId && run.status !== 'completed' &&
-      canManage(interaction, run))
+    .filter((run) => run.runId && run.guildId === interaction.guildId &&
+      (isFixRun || (run.status !== 'completed' && canManage(interaction, run))))
     .filter((run) => !q || run.runId.startsWith(q) || (run.title ?? '').toLowerCase().includes(q))
     .sort((a, b) => (b.startsAt ?? 0) - (a.startsAt ?? 0))
     .slice(0, 25)
