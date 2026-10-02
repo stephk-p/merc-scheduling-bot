@@ -829,13 +829,25 @@ function rosterCopyContent(run, postContent) {
 
 /**
  * Finds a roster copy the bot already posted but never saved the ID for — runs adopted before
- * roster copies existed, or where saving the ID failed after posting. Only the pinned, button-less
- * message the bot posts counts; the main run post (with Sign up/Leave/Manage Signup) is never
- * pinned in the private channel, so there's no risk of mixing the two up.
+ * roster copies existed, or where posting succeeded but pinning it didn't (missing Manage Messages).
+ * Checks pinned messages first (the common case), then falls back to scanning recent history so an
+ * unpinned copy is still found instead of getting duplicated. Either way, only a button-less bot
+ * message counts — the main run post (with Sign up/Leave/Manage Signup) is never posted here, and
+ * the "starting soon" ping is excluded by its wording, so there's no risk of mixing them up.
  */
 async function findUntrackedRosterCopy(channel) {
+  const isCandidate = (m) => m.author.id === client.user.id && m.components.length === 0 &&
+    !m.content.includes('Run is starting');
+
   const pinned = await channel.messages.fetchPinned().catch(() => null);
-  return pinned?.find((m) => m.author.id === client.user.id && m.components.length === 0) ?? null;
+  const pinnedMatch = pinned?.find(isCandidate);
+  if (pinnedMatch) return pinnedMatch;
+
+  const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  const matches = recent?.filter(isCandidate);
+  if (!matches?.size) return null;
+  // The roster copy is always the first message the bot posts in the channel, so the oldest match wins.
+  return matches.reduce((oldest, m) => (m.createdTimestamp < oldest.createdTimestamp ? m : oldest));
 }
 
 /**
