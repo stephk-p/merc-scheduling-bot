@@ -844,8 +844,8 @@ async function findUntrackedRosterCopy(channel) {
   const isCandidate = (m) => m.author.id === client.user.id && m.components.length === 0 &&
     !m.content.includes('Run is starting');
 
-  const pinned = await channel.messages.fetchPinned().catch(() => null);
-  const pinnedMatch = pinned?.find(isCandidate);
+  const pins = await channel.messages.fetchPins().catch(() => null);
+  const pinnedMatch = pins?.items.map((p) => p.message).find(isCandidate);
   if (pinnedMatch) return pinnedMatch;
 
   const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
