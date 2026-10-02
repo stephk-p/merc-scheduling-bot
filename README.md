@@ -175,6 +175,7 @@ You can start typing the ID or the run name and pick it from the list. You get t
 | **Failed** | The post is marked failed and sign-ups close. The channel stays so you can plan a retry. |
 | **Reschedule** | Enter a new time. The post is updated and sign-ups reopen. `/createrun` channels are renamed to the new day. |
 | **Edit roster** | Add someone (pick them, then their roles and jobs like a normal sign-up), change someone's pick, or remove people. Flex moves, the waitlist and the private channel update just like normal sign-ups and leaves. |
+| **Edit details** | Change the amount, merc run type and/or time (time is optional — leave it blank to keep the current one). The roster, status and private channel membership are untouched; the channel is just renamed if the title or day changed. |
 | **Delete run** | Deletes the post and the channel right away (asks you to confirm first). |
 
 If a run's private channel is deleted, whether by the bot or by hand, the run is removed from `/managerun` too.

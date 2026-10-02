@@ -368,6 +368,10 @@ function manageButtons(messageId, run) {
       new ButtonBuilder().setCustomId(`manage:delete:${messageId}`).setLabel('Delete run').setEmoji('🗑️')
         .setStyle(ButtonStyle.Secondary),
     ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`manage:details:${messageId}`).setLabel('Edit details').setEmoji('✏️')
+        .setStyle(ButtonStyle.Secondary),
+    ),
   ];
 }
 
@@ -414,6 +418,43 @@ function rescheduleModal(messageId, run) {
           .setPlaceholder('e.g. sept 30 @ 8 PM')
           .setStyle(TextInputStyle.Short)
           .setRequired(true)
+          .setMaxLength(100),
+      ),
+    );
+}
+
+/** Edit amount/merc run type/time without touching the roster. Time is optional (blank keeps it). */
+function detailsModal(messageId, run) {
+  const { amount, text } = runAmountAndText(run);
+  return new ModalBuilder()
+    .setCustomId(`manage:details-submit:${messageId}`)
+    .setTitle(`Edit run ${run.runId}`)
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('amount')
+          .setLabel('Amount')
+          .setStyle(TextInputStyle.Short)
+          .setValue(amount)
+          .setRequired(true)
+          .setMaxLength(50),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('merc_run_type')
+          .setLabel('Merc run type')
+          .setStyle(TextInputStyle.Paragraph)
+          .setValue(text)
+          .setRequired(true)
+          .setMaxLength(300),
+      ),
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('time')
+          .setLabel('New time (leave blank to keep the current one)')
+          .setPlaceholder('e.g. sept 30 @ 8 PM')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(false)
           .setMaxLength(100),
       ),
     );
@@ -580,6 +621,13 @@ const noMassPing = (s) => s.replace(/@(everyone|here)/gi, '@\u200b$1');
 
 /** Short run name used outside the post itself, e.g. "5m M4S clear for StephK". */
 const runName = (run) => (run.title && run.cleareeName ? `${run.title} for ${run.cleareeName}` : run.title ?? run.header);
+
+// Runs made before `amount`/`text` were saved separately fall back to splitting the combined title.
+function runAmountAndText(run) {
+  if (run.amount && run.text) return { amount: run.amount, text: run.text };
+  const [amount, ...rest] = (run.title ?? '').split(' ');
+  return { amount: amount ?? '', text: rest.join(' ') };
+}
 
 // ---------------------------------------------------------------------------
 // Per-server role rules (see config.js)
@@ -1042,6 +1090,8 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
     header,
     ping: ping.text,
     title: `${amount} ${text}`,
+    amount,
+    text,
     startsAt: parsed.ts,
     signups: [
       { userId: cleareeKey, mode: 'firm', roles: [role], jobs },
@@ -1397,6 +1447,8 @@ async function handleManageButton(interaction, action, messageId) {
       return closeRun(interaction, messageId, 'failed');
     case 'reschedule':
       return interaction.showModal(rescheduleModal(messageId, run));
+    case 'details':
+      return interaction.showModal(detailsModal(messageId, run));
     case 'edit':
       return interaction.update(await editPanel(interaction, messageId, run));
     case 'delete':
@@ -1457,6 +1509,70 @@ async function handleRescheduleSubmit(interaction, messageId) {
 
     let reply = `Run **${run.runId}** rescheduled to <t:${parsed.ts}:F>. Sign-ups are open again.`;
     if (!run.privateChannelId) reply += '\n(Its private channel was already deleted.)';
+    if (!postExists) reply += '\n(The run post was deleted, so only the saved record was updated.)';
+    return interaction.editReply({ content: reply, components: [] });
+  });
+}
+
+/** Edit amount/merc run type/time without touching the roster, status or private channel members. */
+async function handleDetailsSubmit(interaction, messageId) {
+  const existing = getRun(messageId);
+  if (!existing) return interaction.reply(ephemeral('That run no longer exists.'));
+  if (!canManage(interaction, existing)) {
+    return interaction.reply(ephemeral(NOT_MANAGER));
+  }
+
+  const amount = noMassPing(interaction.fields.getTextInputValue('amount').trim());
+  const text = noMassPing(interaction.fields.getTextInputValue('merc_run_type').trim());
+  if (!amount || !text) return interaction.reply(ephemeral('Amount and merc run type can\'t be empty.'));
+
+  const timeInput = interaction.fields.getTextInputValue('time').trim();
+  let parsed = null;
+  if (timeInput) {
+    parsed = parseTime(timeInput, getUserZone(interaction.user.id));
+    if (parsed.error) return interaction.reply(ephemeral(parsed.error));
+  }
+
+  if (interaction.isFromMessage()) await interaction.deferUpdate();
+  else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  return withLock(messageId, async () => {
+    const run = getRun(messageId);
+    if (!run) return interaction.editReply({ content: 'That run no longer exists.', components: [] });
+
+    // The header is "<title> for <who> @ <t:...>"; keep everything after the old title as-is.
+    const oldTitle = run.title ?? '';
+    const newTitle = `${amount} ${text}`;
+    const titleChanged = newTitle !== oldTitle;
+    let newHeader = `${newTitle}${run.header.slice(oldTitle.length)}`;
+
+    if (parsed) {
+      const stamp = `<t:${parsed.ts}:f>`;
+      newHeader = /<t:-?\d+(?::[tTdDfFR])?>/.test(newHeader)
+        ? newHeader.replace(/<t:-?\d+(?::[tTdDfFR])?>/, stamp)
+        : `${newHeader} ${stamp}`;
+      run.startsAt = parsed.ts;
+      run.rolePingSent = false;
+      run.dmRemindersSent = {};
+      run.startPromptSent = false;
+    }
+
+    run.amount = amount;
+    run.text = text;
+    run.title = newTitle;
+    run.header = newHeader;
+
+    const postExists = await updatePost(messageId, run);
+    setRun(messageId, run);
+    if (parsed) await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
+
+    if ((titleChanged || parsed) && !showsRunId(run) && run.privateChannelId) {
+      const date = parsed?.date ?? DateTime.fromSeconds(run.startsAt, { zone: getUserZone(interaction.user.id) ?? 'UTC' });
+      renameDayChannel(run, date);
+    }
+
+    let reply = `Run **${run.runId}** updated.`;
+    if (parsed) reply += ` New time: <t:${parsed.ts}:F>.`;
     if (!postExists) reply += '\n(The run post was deleted, so only the saved record was updated.)';
     return interaction.editReply({ content: reply, components: [] });
   });
@@ -2075,6 +2191,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isModalSubmit()) {
       const [ns, action, messageId] = interaction.customId.split(':');
       if (ns === 'manage' && action === 'reschedule-submit') return await handleRescheduleSubmit(interaction, messageId);
+      if (ns === 'manage' && action === 'details-submit') return await handleDetailsSubmit(interaction, messageId);
     }
   } catch (err) {
     console.error(err);
