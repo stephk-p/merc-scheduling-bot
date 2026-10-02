@@ -827,14 +827,46 @@ function rosterCopyContent(run, postContent) {
   return pingLine && postContent.startsWith(pingLine) ? postContent.slice(pingLine.length) : postContent;
 }
 
-/** Update the roster copy in the private channel to match the run post. Never throws. */
-async function syncRosterCopy(run, postContent) {
-  if (!run.privateChannelId || !run.rosterCopyId) return;
+/**
+ * Finds a roster copy the bot already posted but never saved the ID for — runs adopted before
+ * roster copies existed, or where saving the ID failed after posting. Only the pinned, button-less
+ * message the bot posts counts; the main run post (with Sign up/Leave/Manage Signup) is never
+ * pinned in the private channel, so there's no risk of mixing the two up.
+ */
+async function findUntrackedRosterCopy(channel) {
+  const pinned = await channel.messages.fetchPinned().catch(() => null);
+  return pinned?.find((m) => m.author.id === client.user.id && m.components.length === 0) ?? null;
+}
+
+/**
+ * Update (or create) the roster copy in the private channel to match the run post. Independent of
+ * whether the run post itself still exists or could be reposted, so it's kept current either way.
+ * Never throws.
+ */
+async function syncRosterCopy(postId, run, postContent) {
+  if (!run.privateChannelId) return;
   try {
     const channel = await fetchPrivateChannel(run);
-    const copy = channel && (await channel.messages.fetch(run.rosterCopyId).catch(() => null));
-    if (!copy) return;
-    await copy.edit({ content: rosterCopyContent(run, postContent), allowedMentions: { parse: [] } });
+    if (!channel) return;
+    const content = rosterCopyContent(run, postContent);
+
+    let copy = run.rosterCopyId && (await channel.messages.fetch(run.rosterCopyId).catch(() => null));
+    if (!copy) copy = await findUntrackedRosterCopy(channel);
+
+    if (copy) {
+      await copy.edit({ content, allowedMentions: { parse: [] } });
+    } else {
+      copy = await channel.send({ content, allowedMentions: { parse: [] } }).catch((err) => {
+        console.error(`Couldn't post the roster copy for run ${run.runId}:`, err.message);
+        return null;
+      });
+      if (copy) await copy.pin('Run roster').catch(() => {}); // needs Manage Messages; fine if it can't
+    }
+
+    if (copy && copy.id !== run.rosterCopyId) {
+      run.rosterCopyId = copy.id;
+      setRun(postId, run);
+    }
   } catch (err) {
     console.error(`Couldn't update the roster copy for run ${run.runId}:`, err.message);
   }
@@ -1508,19 +1540,9 @@ async function handleAdoptRun(interaction) {
   await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
   for (const userId of channelMembers(run)) await addToPrivateChannel(run, userId);
 
-  // Pinned roster copy in the private channel, same as /createrun.
-  const copy = await privateChannel.send({
-    content: rosterCopyContent(run, rendered.content),
-    allowedMentions: { parse: [] },
-  }).catch((err) => {
-    console.error(`Couldn't post the roster copy for run ${runId}:`, err.message);
-    return null;
-  });
-  if (copy) {
-    run.rosterCopyId = copy.id;
-    setRun(newPost.id, run);
-    await copy.pin('Run roster').catch(() => {});
-  }
+  // Picks up a roster copy the bot already posted in the private channel (e.g. this run was adopted
+  // before roster copies existed), or posts a fresh pinned one — same as /createrun.
+  await syncRosterCopy(newPost.id, run, rendered.content);
 
   const signupCount = run.signups.length;
   return interaction.reply({
@@ -1547,29 +1569,33 @@ async function handleAdoptRun(interaction) {
  */
 async function updatePost(messageId, run) {
   const channel = await client.channels.fetch(run.channelId).catch(() => null);
-  if (!channel) return null;
 
   const rendered = render(run);
   run.placed = rendered.placed;
   const content = rendered.content;
   const components = [runButtons(isClosed(run))];
 
-  const post = await channel.messages.fetch(messageId).catch(() => null);
+  const post = channel && (await channel.messages.fetch(messageId).catch(() => null));
   if (post) {
     await post.edit({ content, components, allowedMentions: { parse: [] } });
-    await syncRosterCopy(run, content);
+    await syncRosterCopy(messageId, run, content);
     return messageId;
   }
 
-  const fresh = await channel.send({ content, components, allowedMentions: { parse: [] } }).catch((err) => {
+  const fresh = channel && (await channel.send({ content, components, allowedMentions: { parse: [] } }).catch((err) => {
     console.error(`Couldn't repost the missing post for run ${run.runId}:`, err.message);
     return null;
-  });
-  if (!fresh) return null;
+  }));
+  if (!fresh) {
+    // The private channel's roster copy is tracked independently of the main post, so it can still
+    // be kept current even when the main post is gone and couldn't be reposted (or its channel is gone too).
+    await syncRosterCopy(messageId, run, content);
+    return null;
+  }
 
   deleteRun(messageId);
   setRun(fresh.id, run);
-  await syncRosterCopy(run, content);
+  await syncRosterCopy(fresh.id, run, content);
   return fresh.id;
 }
 
@@ -2041,7 +2067,7 @@ async function handleConfirm(interaction, messageId, encodedValues, encodedJobs)
       content: outcomeText(signup, rendered) + (signup.jobs.length ? `\nJobs: **${describeJobs(signup)}**` : ''),
       components: [],
     });
-    await syncRosterCopy(updated, rendered.content);
+    await syncRosterCopy(messageId, updated, rendered.content);
     if (isNew) await addToPrivateChannel(updated, userId);
   });
 }
@@ -2062,7 +2088,7 @@ async function handleLeave(interaction) {
     setRun(post.id, updated);
     await syncActiveRosterRole(updated.guildId, interaction.guild, [...signups.map((s) => s.userId), interaction.user.id]);
     await interaction.followUp(ephemeral(`Removed you from the run (you were **${describeSignup(mine)}**).`));
-    await syncRosterCopy(updated, rendered.content);
+    await syncRosterCopy(post.id, updated, rendered.content);
     await removeFromPrivateChannel(updated, interaction.user.id);
   });
 }

@@ -185,6 +185,9 @@ You can start typing the ID or the run name and pick it from the list. You get t
 If a run's private channel is deleted, whether by the bot or by hand, the run is removed from `/managerun` too.
 If the run **post** is deleted instead, the next action taken on it (from `/managerun` or a sign-up) reposts a
 fresh copy automatically and keeps managing that one, since the bot can only edit messages it posted itself.
+The pinned roster copy in the private channel is tracked and kept up to date independently of the run post
+itself — including picking up a roster copy a run already had (from before this existed, or from an older
+`/adoptrun`) instead of posting a duplicate, or posting one for the first time if it's missing.
 
 ### Adopting a manually posted run
 
