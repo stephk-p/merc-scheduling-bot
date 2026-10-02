@@ -588,11 +588,16 @@ function isActiveInGuild(guildId, userId) {
 async function syncActiveRosterRole(guildId, guild, userIds) {
   const roleId = ACTIVE_ROSTER_ROLE[guildId];
   if (!roleId || !guild) return;
+  // Only members who already pass this server's signupRoles rule (e.g. UMAD's "mercs" role) can ever
+  // hold the active roster role — a clearee added via /createrun, or anyone picked up from a manually
+  // posted run via /adoptrun, never gets it just for holding a slot.
+  const requiredRoles = SERVER_RULES[guildId]?.signupRoles;
+  const isMerc = (member) => !requiredRoles?.length || requiredRoles.some((id) => member.roles.cache.has(id));
 
   for (const userId of new Set([...userIds].filter(isUserId))) {
     const member = await guild.members.fetch(userId).catch(() => null);
     if (!member) continue;
-    const shouldHave = isActiveInGuild(guildId, userId);
+    const shouldHave = isActiveInGuild(guildId, userId) && isMerc(member);
     const has = member.roles.cache.has(roleId);
     if (shouldHave && !has) {
       await member.roles.add(roleId).catch((err) =>

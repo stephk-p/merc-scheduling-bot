@@ -243,9 +243,12 @@ On servers set up for it (see `ACTIVE_ROSTER_ROLE` in [src/config.js](src/config
 gives a role to whoever currently holds a slot in a run (not bench or waitlisted), and takes it away
 the moment they're bumped, leave, or the run ends. This role is shared across every run in the
 server, so being active in one run and waitlisted in another at the same time is expected to leave
-you holding it — that's fine, since pings themselves (above) never rely on this role alone. DM
-reminders only go out to people who currently hold a slot **in that specific run**, so bench/
-waitlisted mercs aren't bothered about a run they might not play in.
+you holding it — that's fine, since pings themselves (above) never rely on this role alone. Only
+members who already pass that server's `signupRoles` rule (below) can ever hold it — a clearee added
+via `/createrun`, or anyone picked up from a manually posted run via `/adoptrun`, never gets it just
+for holding a slot if they don't have that role. DM reminders only go out to people who currently
+hold a slot **in that specific run**, so bench/waitlisted mercs aren't bothered about a run they
+might not play in.
 
 Admins can use `/startprompt` to turn on a DM to the run's creator when its scheduled time arrives,
 with **Completed**, **Failed** and **Reschedule** buttons — the same ones on `/managerun`, so they're
