@@ -216,6 +216,10 @@ it's submitted.
   the [Discord Developer Portal](https://discord.com/developers/applications) (Bot tab) — without
   it, the role option won't find anyone to DM.
 
+The bot also rechecks every run's private channel once a minute and re-grants access to anyone who
+should be able to see it but can't anymore (for example, if their permission was removed by hand) —
+not just when they first sign up.
+
 ## Role restrictions
 
 A server can limit who creates runs and who signs up. These rules are set in [src/config.js](src/config.js):

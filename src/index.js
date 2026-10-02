@@ -686,7 +686,15 @@ function canManage(interaction, run) {
     Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageChannels));
 }
 
-const NOT_MANAGER = 'Only the person who created this run, or someone with Manage Channels, can manage it.';
+/** Explains both halves of canManage(): who can use /managerun here, AND who counts as this run's manager. */
+function notManagerText(interaction) {
+  const required = SERVER_RULES[interaction.guildId]?.commandRoles;
+  const who = required?.length
+    ? `members with the ${required.map((id) => `<@&${id}>`).join(' or ')} role, server administrators,`
+    : 'server administrators';
+  return `Only ${who} or members granted access via \`/permissions\` can use \`/managerun\` here — ` +
+    "and even then, only the run's creator or someone with Manage Channels can manage this specific run.";
+}
 
 // ---------------------------------------------------------------------------
 // Channel names
@@ -765,6 +773,26 @@ async function removeFromPrivateChannel(run, userId) {
     await channel.permissionOverwrites.delete(userId, `Left merc run ${run.runId}`);
   } catch (err) {
     console.error(`Couldn't remove ${userId} from the channel for run ${run.runId}:`, err.message);
+  }
+}
+
+/**
+ * Re-grants view access to anyone who should see this run's private channel but can't (e.g. their
+ * overwrite was removed by hand, or never fully applied). Run periodically, not just on sign-up,
+ * since that's the only way to catch access lost outside the bot's own actions.
+ */
+async function syncChannelAccess(run) {
+  const channel = await fetchPrivateChannel(run);
+  if (!channel) return;
+  for (const userId of channelMembers(run)) {
+    const overwrite = channel.permissionOverwrites.cache.get(userId);
+    if (overwrite?.allow.has(PermissionFlagsBits.ViewChannel)) continue;
+    await channel.permissionOverwrites.edit(
+      userId,
+      { ViewChannel: true, SendMessages: true, ReadMessageHistory: true },
+      { type: OverwriteType.Member, reason: `Re-granting access to merc run ${run.runId}` },
+    ).catch((err) =>
+      console.error(`Couldn't re-grant ${userId} access to the channel for run ${run.runId}:`, err.message));
   }
 }
 
@@ -884,6 +912,12 @@ function hasRoleCommandAccess(guildId, roleId, command) {
 async function sweepReminders() {
   const now = Date.now();
   for (const [messageId, run] of allRuns()) {
+    // Runs independently of status/timing, so access lost by hand is caught even on closed runs.
+    if (run.privateChannelId) {
+      await syncChannelAccess(run)
+        .catch((err) => console.error(`Couldn't sync channel access for run ${run.runId}:`, err.message));
+    }
+
     if (run.status !== 'open' || !run.startsAt) continue;
     const msUntilStart = run.startsAt * 1000 - now;
 
@@ -1333,7 +1367,7 @@ async function handleManageRun(interaction) {
   const found = findRunById(interaction.guildId, runId);
   if (!found) return interaction.reply(ephemeral(`There's no run with Merc Run ID **${runId}** in this server.`));
   if (!canManage(interaction, found.run)) {
-    return interaction.reply(ephemeral(NOT_MANAGER));
+    return interaction.reply(ephemeral(notManagerText(interaction)));
   }
 
   return interaction.reply({
@@ -1437,7 +1471,7 @@ async function handleManageButton(interaction, action, messageId) {
   const run = getRun(messageId);
   if (!run) return interaction.update({ content: 'That run no longer exists.', components: [] });
   if (!canManage(interaction, run)) {
-    return interaction.reply(ephemeral(NOT_MANAGER));
+    return interaction.reply(ephemeral(notManagerText(interaction)));
   }
 
   switch (action) {
@@ -1476,7 +1510,7 @@ async function handleRescheduleSubmit(interaction, messageId) {
   const existing = getRun(messageId);
   if (!existing) return interaction.reply(ephemeral('That run no longer exists.'));
   if (!canManage(interaction, existing)) {
-    return interaction.reply(ephemeral(NOT_MANAGER));
+    return interaction.reply(ephemeral(notManagerText(interaction)));
   }
 
   const input = interaction.fields.getTextInputValue('time');
@@ -1519,7 +1553,7 @@ async function handleDetailsSubmit(interaction, messageId) {
   const existing = getRun(messageId);
   if (!existing) return interaction.reply(ephemeral('That run no longer exists.'));
   if (!canManage(interaction, existing)) {
-    return interaction.reply(ephemeral(NOT_MANAGER));
+    return interaction.reply(ephemeral(notManagerText(interaction)));
   }
 
   const amount = noMassPing(interaction.fields.getTextInputValue('amount').trim());
@@ -1735,7 +1769,7 @@ async function handleSelect(interaction, messageId, kind, targetId = null) {
   if (targetId) {
     const saved = getRun(messageId);
     if (!saved) return interaction.update({ content: 'That run no longer exists.', components: [] });
-    if (!canManage(interaction, saved)) return interaction.update({ content: NOT_MANAGER, components: [] });
+    if (!canManage(interaction, saved)) return interaction.update({ content: notManagerText(interaction), components: [] });
   } else if (!hasRuleRole(interaction, 'signupRoles')) {
     return interaction.update({ content: needRoleText(interaction, 'signupRoles', 'sign up for runs'), components: [] });
   }
@@ -1888,7 +1922,7 @@ async function editPanel(interaction, messageId, run, note = '') {
 async function handleEditAdd(interaction, messageId) {
   const run = getRun(messageId);
   if (!run) return interaction.update({ content: 'That run no longer exists.', components: [] });
-  if (!canManage(interaction, run)) return interaction.update({ content: NOT_MANAGER, components: [] });
+  if (!canManage(interaction, run)) return interaction.update({ content: notManagerText(interaction), components: [] });
 
   const userId = interaction.values[0];
   if (interaction.users.get(userId)?.bot) {
@@ -1914,7 +1948,7 @@ async function handleEditConfirm(interaction, messageId, userId, encodedValues, 
   return withLock(messageId, async () => {
     const run = getRun(messageId);
     if (!run) return interaction.editReply({ content: 'That run no longer exists.', components: [] });
-    if (!canManage(interaction, run)) return interaction.editReply({ content: NOT_MANAGER, components: [] });
+    if (!canManage(interaction, run)) return interaction.editReply({ content: notManagerText(interaction), components: [] });
 
     const signup = selectionToSignup(userId, decodeValues(encodedValues), decodeJobs(encodedJobs));
     const check = checkSelection(signup);
@@ -1944,7 +1978,7 @@ async function handleEditRemove(interaction, messageId) {
   return withLock(messageId, async () => {
     const run = getRun(messageId);
     if (!run) return interaction.editReply({ content: 'That run no longer exists.', components: [] });
-    if (!canManage(interaction, run)) return interaction.editReply({ content: NOT_MANAGER, components: [] });
+    if (!canManage(interaction, run)) return interaction.editReply({ content: notManagerText(interaction), components: [] });
 
     const removed = run.signups.filter((s) => interaction.values.includes(s.userId));
     if (!removed.length) {
@@ -2151,7 +2185,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (action === 'panel') {
           const run = getRun(messageId);
           if (!run) return await interaction.update({ content: 'That run no longer exists.', components: [] });
-          if (!canManage(interaction, run)) return await interaction.update({ content: NOT_MANAGER, components: [] });
+          if (!canManage(interaction, run)) return await interaction.update({ content: notManagerText(interaction), components: [] });
           return await interaction.update(await editPanel(interaction, messageId, run));
         }
         return;
