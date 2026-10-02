@@ -50,8 +50,9 @@ That roster is the only message the bot posts in the channel. Nobody is @mention
 
 - **clearee** can be picked from the list of server members as you type, or you can type any name.
   If it matches a server member (their nickname, display name or username), they get the slot and are
-  added to the private channel. If nobody matches, the name is just shown on the roster and nobody is added.
-  Either way the clearee is shown by name and isn't @mentioned in the run post.
+  added to the private channel. If they can also see the channel the run is posted in, they're
+  @mentioned (and pinged) there too, just like a normal sign-up. If nobody matches, or they can't see
+  the channel, they're just shown by name instead.
 - **time** can be written however you'd normally say it: `sept 28 @ 4 PM`, `tomorrow 8pm`, `friday at 7pm`.
   Everyone sees it in their own timezone.
 - **role** is the clearee's role. They're added to that slot automatically.

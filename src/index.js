@@ -522,12 +522,13 @@ function pingFor(guildId) {
     : { text: '@here', allowedMentions: { parse: ['everyone'] }, roleId: null };
 }
 
-// The clearee is shown by name in the run post instead of being @mentioned. `cleareeKey` is the
-// ID used for their roster slot: their user ID, or a placeholder if they aren't a server member.
+// The clearee is shown by name in the run post instead of being @mentioned, unless they're a
+// member who can see the channel (then they're @mentioned like a normal sign-up). `cleareeKey` is
+// the ID used for their roster slot: their user ID, or a placeholder if they aren't a server member.
 function labelsFor(run) {
   const labels = { ...run.manualLabels };
   const key = run.cleareeKey ?? run.cleareeId;
-  if (key && run.cleareeName) labels[key] = run.cleareeName;
+  if (key && run.cleareeName && !run.cleareePinged) labels[key] = run.cleareeName;
   if (run.extraCleareeKey && run.extraCleareeName && !run.extraCleareePinged) {
     labels[run.extraCleareeKey] = run.extraCleareeName;
   }
@@ -1134,8 +1135,12 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
     postChannel?.permissionsFor(extra.member)?.has(PermissionFlagsBits.ViewChannel));
   const extraShown = pingExtra ? `<@${extra.member.id}>` : extra?.name;
 
-  // The main clearee is named, not @mentioned, in the channel the run is posted in.
-  const who = cleareeLabel(cleareeName, jobs, role) + (extra ? ` & ${cleareeLabel(extraShown, extraJobs, extraRole)}` : '');
+  // The main clearee is @mentioned (and pinged) the same way, if they're a member who can see this channel.
+  const pingMain = Boolean(cleareeMember &&
+    postChannel?.permissionsFor(cleareeMember)?.has(PermissionFlagsBits.ViewChannel));
+  const cleareeShown = pingMain ? `<@${cleareeMember.id}>` : cleareeName;
+
+  const who = cleareeLabel(cleareeShown, jobs, role) + (extra ? ` & ${cleareeLabel(extraShown, extraJobs, extraRole)}` : '');
   const header = `${amount} ${text} for ${who} @ <t:${parsed.ts}:f>`;
   const ping = noPing ? { text: null, allowedMentions: { parse: [] }, roleId: null } : pingFor(interaction.guildId);
   const run = {
@@ -1161,6 +1166,7 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
     cleareeId: cleareeMember?.id ?? null,
     cleareeKey,
     cleareeName,
+    cleareePinged: pingMain,
     extraCleareeId: extra?.member?.id ?? null,
     extraCleareeKey: extra?.key ?? null,
     extraCleareeName: extra?.name ?? null,
@@ -1183,10 +1189,11 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   let post;
   try {
     const channel = postChannel ?? (await client.channels.fetch(interaction.channelId));
+    const pingedUsers = [...(pingMain ? [cleareeMember.id] : []), ...(pingExtra ? [extra.member.id] : [])];
     post = await channel.send({
       content: rendered.content,
       components: [runButtons()],
-      allowedMentions: { ...ping.allowedMentions, users: pingExtra ? [extra.member.id] : [] },
+      allowedMentions: { ...ping.allowedMentions, users: pingedUsers },
     });
   } catch (err) {
     console.error(`Couldn't post run ${run.runId}:`, err);
@@ -1221,6 +1228,8 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   }
   if (!cleareeMember) {
     done += `\nNo server member matched "${cleareeName}", so the clearee is shown by name only and wasn't added to the channel.`;
+  } else if (!pingMain) {
+    done += `\n${cleareeName} can't see this channel, so they're shown by name instead of pinged. They were still added to the private channel.`;
   }
   if (extra && !extra.member) {
     done += `\nNo server member matched "${extra.name}", so the extra clearee is shown by name only and wasn't added to the channel.`;
