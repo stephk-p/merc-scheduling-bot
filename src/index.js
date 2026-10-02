@@ -97,6 +97,7 @@ const COMMAND_BLURBS = {
   settimezone: 'Save or change your timezone',
   permissions: 'Grant or revoke who can use restricted commands (admins only)',
   startprompt: "Configure the run-starting DM, including an optional role to ping (admins only)",
+  fixrun: "Repost a missing roster copy in any run's private channel (admins only)",
   help: 'Show this help message',
 };
 
@@ -227,6 +228,10 @@ const commands = [
       .setName('role')
       .setDescription("Also DM everyone with a role when a run starts (omit to clear it)")
       .addRoleOption((o) => o.setName('role').setDescription('Role to DM (leave blank to clear)'))),
+  new SlashCommandBuilder()
+    .setName('fixrun')
+    .setDescription("Scan every run in this server and repost a missing roster copy in its private channel")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map((c) => c.toJSON());
 
 // ---------------------------------------------------------------------------
@@ -1332,7 +1337,7 @@ async function handleHelp(interaction) {
         return hasCommandAccess(interaction, c);
       });
     if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      available.push('permissions', 'startprompt');
+      available.push('permissions', 'startprompt', 'fixrun');
     }
     for (const c of available) lines.push(`• \`/${c}\` \u2014 ${COMMAND_BLURBS[c] ?? ''}`);
   } else {
@@ -1428,6 +1433,40 @@ async function handleStartPrompt(interaction) {
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });
+}
+
+/**
+ * Scans every run in this server with a private channel and recovers a missing roster copy —
+ * never the main run post itself, and never with Sign up/Leave/Manage Signup buttons, since
+ * `ensureRosterCopy`/`syncRosterCopy` only ever post into the private channel without components.
+ */
+async function handleFixRun(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply(ephemeral('Only server administrators can use `/fixrun`.'));
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  let checked = 0;
+  let fixed = 0;
+  let failed = 0;
+  for (const [messageId, run] of allRuns()) {
+    if (run.guildId !== interaction.guildId || !run.privateChannelId) continue;
+    checked++;
+    const hadCopy = Boolean(run.rosterCopyId);
+    try {
+      await ensureRosterCopy(messageId, run);
+      if (!hadCopy && run.rosterCopyId) fixed++;
+    } catch (err) {
+      failed++;
+      console.error(`/fixrun couldn't check run ${run.runId}:`, err.message);
+    }
+  }
+
+  const parts = [`Checked ${checked} run(s) with a private channel.`];
+  parts.push(fixed ? `Posted a missing roster copy for ${fixed} of them.` : 'Every roster copy was already there.');
+  if (failed) parts.push(`${failed} couldn't be checked — see the console for details.`);
+  return interaction.editReply(parts.join(' '));
 }
 
 function manageSummary(run) {
@@ -2479,6 +2518,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'help': return await handleHelp(interaction);
         case 'permissions': return await handlePermissions(interaction);
         case 'startprompt': return await handleStartPrompt(interaction);
+        case 'fixrun': return await handleFixRun(interaction);
         default: return;
       }
     }
