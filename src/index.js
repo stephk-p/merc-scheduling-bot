@@ -66,6 +66,7 @@ import {
   revokeRole,
   revokeUser,
 } from './permissions.js';
+import { getStartPromptSettings, setStartPromptEnabled, setStartPromptRole } from './startPrompt.js';
 
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
 if (!DISCORD_TOKEN) {
@@ -91,6 +92,7 @@ const COMMAND_BLURBS = {
   setpreference: 'Save your usual roles/jobs and choose DM reminder times',
   settimezone: 'Save or change your timezone',
   permissions: 'Grant or revoke who can use restricted commands (admins only)',
+  startprompt: "Configure the run-starting DM, including an optional role to ping (admins only)",
   help: 'Show this help message',
 };
 
@@ -193,6 +195,16 @@ const commands = [
     .addSubcommand((sc) => sc
       .setName('list')
       .setDescription('Show every role/member grant in this server')),
+  new SlashCommandBuilder()
+    .setName('startprompt')
+    .setDescription("Configure the DM sent when a run's scheduled time arrives")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addSubcommand((sc) => sc.setName('enable').setDescription('Turn the run-starting DM on for this server'))
+    .addSubcommand((sc) => sc.setName('disable').setDescription('Turn the run-starting DM off for this server'))
+    .addSubcommand((sc) => sc
+      .setName('role')
+      .setDescription('Also ping a role in the private channel when a run starts (omit to clear it)')
+      .addRoleOption((o) => o.setName('role').setDescription('Role to ping (leave blank to clear)'))),
 ].map((c) => c.toJSON());
 
 // ---------------------------------------------------------------------------
@@ -769,21 +781,46 @@ async function sendDmReminder(run, userId, minutes) {
 }
 
 /**
- * DMs the run's creator (privately, nobody else in the channel sees this) when the scheduled time
- * arrives, prompting them to mark it completed/failed or reschedule it. Same manage:complete/fail/
- * reschedule buttons /managerun uses, so clicking them is gated the same way (commandRoles, an
- * admin, or a /permissions grant) — Reschedule just opens that same modal and doesn't change
- * anything until it's submitted. The bot has no way to look up everyone with commandRoles without
- * the privileged Members intent, so this only reaches the creator for now.
+ * DMs the run's creator when the scheduled time arrives, prompting them to mark it completed/
+ * failed or reschedule it. If a role is assigned for this server (/startprompt role), it's also
+ * pinged with the same buttons in the private channel. Same manage:complete/fail/reschedule
+ * buttons /managerun uses, so clicking them is gated the same way (commandRoles, an admin, or a
+ * /permissions grant) — Reschedule just opens that same modal and doesn't change anything until
+ * it's submitted. The bot has no way to look up everyone with commandRoles without the privileged
+ * Members intent, so without an assigned role this only reaches the creator.
  */
 async function sendStartPrompt(run, messageId) {
-  if (!isUserId(run.creatorId)) return;
-  const user = await client.users.fetch(run.creatorId);
-  await user.send({
-    content: `**${runName(run)}** was scheduled to start <t:${run.startsAt}:R>. ` +
-      'Mark it completed or failed, or reschedule it:',
-    components: startPromptButtons(messageId),
-  });
+  const prompt = `**${runName(run)}** was scheduled to start <t:${run.startsAt}:R>. ` +
+    'Mark it completed or failed, or reschedule it:';
+
+  if (isUserId(run.creatorId)) {
+    const user = await client.users.fetch(run.creatorId);
+    await user.send({ content: prompt, components: startPromptButtons(messageId) });
+  }
+
+  const roleId = getStartPromptSettings(run.guildId).roleId;
+  if (roleId && run.privateChannelId) {
+    const channel = await client.channels.fetch(run.privateChannelId).catch(() => null);
+    if (channel) {
+      await channel.send({
+        content: `<@&${roleId}> ${prompt}`,
+        components: startPromptButtons(messageId),
+        allowedMentions: { roles: [roleId] },
+      });
+    }
+  }
+}
+
+/** Whether a server has the run-starting DM on: the /startprompt override, else the code default. */
+function isStartPromptEnabled(guildId) {
+  const override = getStartPromptSettings(guildId).enabled;
+  return override ?? Boolean(START_PROMPT_ENABLED[guildId]);
+}
+
+/** Whether this role (not a specific member) passes commandRoles or a /permissions grant for `command`. */
+function hasRoleCommandAccess(guildId, roleId, command) {
+  if (SERVER_RULES[guildId]?.commandRoles?.includes(roleId)) return true;
+  return getGrants(guildId, command).roles.includes(roleId);
 }
 
 // Role ping and DM reminders for runs starting soon. Runs every minute alongside sweepChannels,
@@ -802,7 +839,7 @@ async function sweepReminders() {
     }
 
     if (msUntilStart <= 0) {
-      if (START_PROMPT_ENABLED[run.guildId] && !run.startPromptSent) {
+      if (isStartPromptEnabled(run.guildId) && !run.startPromptSent) {
         run.startPromptSent = true;
         setRun(messageId, run);
         await sendStartPrompt(run, messageId)
@@ -1112,7 +1149,9 @@ async function handleHelp(interaction) {
         if (c === 'setpreference') return hasCommandAccess(interaction, c, 'preferenceRoles');
         return hasCommandAccess(interaction, c);
       });
-    if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) available.push('permissions');
+    if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+      available.push('permissions', 'startprompt');
+    }
     for (const c of available) lines.push(`• \`/${c}\` \u2014 ${COMMAND_BLURBS[c] ?? ''}`);
   } else {
     lines.push('', 'Run this in a server to see which commands you have access to there.');
@@ -1164,6 +1203,45 @@ async function handlePermissions(interaction) {
   const verb = sub === 'grant' ? 'can now use' : 'no longer has extra access to';
   return interaction.reply({
     content: `✅ ${who} ${verb} \`/${command}\`.`,
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// /startprompt
+// ---------------------------------------------------------------------------
+async function handleStartPrompt(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply(ephemeral('Only server administrators can use `/startprompt`.'));
+  }
+
+  const sub = interaction.options.getSubcommand();
+  if (sub === 'enable') {
+    setStartPromptEnabled(interaction.guildId, true);
+    return interaction.reply(ephemeral('✅ The run-starting DM is now on for this server.'));
+  }
+  if (sub === 'disable') {
+    setStartPromptEnabled(interaction.guildId, false);
+    return interaction.reply(ephemeral('The run-starting DM is now off for this server.'));
+  }
+
+  // sub === 'role'
+  const role = interaction.options.getRole('role');
+  if (!role) {
+    setStartPromptRole(interaction.guildId, null);
+    return interaction.reply(ephemeral('Cleared. No role will be pinged for the run-starting prompt anymore.'));
+  }
+
+  let note = '';
+  if (!hasRoleCommandAccess(interaction.guildId, role.id, 'createrun')) {
+    grantRole(interaction.guildId, 'createrun', role.id);
+    note = ` I also granted <@&${role.id}> access to \`/createrun\`, since it didn't have it.`;
+  }
+  setStartPromptRole(interaction.guildId, role.id);
+  return interaction.reply({
+    content: `✅ <@&${role.id}> will also be pinged in the private channel for the run-starting prompt.${note}`,
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });
@@ -1930,6 +2008,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'setpreference': return await handleSetPreference(interaction);
         case 'help': return await handleHelp(interaction);
         case 'permissions': return await handlePermissions(interaction);
+        case 'startprompt': return await handleStartPrompt(interaction);
         default: return;
       }
     }

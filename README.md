@@ -195,11 +195,16 @@ you holding it — that's fine, since pings themselves (above) never rely on thi
 reminders only go out to people who currently hold a slot **in that specific run**, so bench/
 waitlisted mercs aren't bothered about a run they might not play in.
 
-On servers turned on in `START_PROMPT_ENABLED` in [src/config.js](src/config.js) (off by default), the
-bot DMs the run's creator (privately, nobody else sees it) when a run's scheduled time arrives, with
-**Completed**, **Failed** and **Reschedule** buttons — the same ones on `/managerun`, so they're gated
-the same way. Clicking Reschedule just opens the usual reschedule form; nothing changes until it's
-submitted.
+Admins can use `/startprompt` to turn on a DM to the run's creator when its scheduled time arrives,
+with **Completed**, **Failed** and **Reschedule** buttons — the same ones on `/managerun`, so they're
+gated the same way. Clicking Reschedule just opens the usual reschedule form; nothing changes until
+it's submitted.
+
+- `/startprompt enable` / `/startprompt disable` turn it on or off for the server (off by default;
+  see `START_PROMPT_ENABLED` in [src/config.js](src/config.js) for a code-level default instead).
+- `/startprompt role` optionally also pings a role in the run's private channel alongside the
+  creator's DM (nobody is pinged there by default). If that role can't already use `/createrun`,
+  it's automatically granted access to it (same as `/permissions grant`).
 
 ## Role restrictions
 
@@ -233,6 +238,7 @@ shows every extra grant in the server.
 | `/setpreference` | Save your usual roles and jobs so Sign up is filled in for you, and choose when you get DM reminders |
 | `/help` | How to sign up for runs and which commands you can use in this server |
 | `/permissions` | Admins only: grant or revoke a role/member's access to restricted commands |
+| `/startprompt` | Admins only: turn the run-starting DM on/off, and optionally assign a role to ping |
 
 ---
 

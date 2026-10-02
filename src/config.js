@@ -36,7 +36,10 @@ export const ACTIVE_ROSTER_ROLE = {
 
 // Servers where the run creator gets a private DM (with Completed/Failed/Reschedule buttons) when
 // a run's scheduled time arrives. Off by default; add `'<guildId>': true` to turn it on somewhere.
-export const START_PROMPT_ENABLED = {};
+// Can also be flipped per server at runtime with /startprompt (which takes priority over this).
+export const START_PROMPT_ENABLED = {
+  '1529143174872825916': true,
+};
 
 /** Commands that are limited by `commandRoles`. */
 export const RESTRICTED_COMMANDS = ['createrun', 'createrun-test', 'managerun', 'runs'];
