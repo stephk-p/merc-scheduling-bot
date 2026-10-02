@@ -38,7 +38,9 @@ The post pings `@here` on the first line (some servers ping a role instead, see 
 The ping only goes out when the run is posted, not when people sign up or the post is updated.
 
 It also creates a private channel called `5m-m4s-clear-stephk-monday-sep-28` (amount, merc run type, clearee,
-weekday and date of the run) in the same category. Only you, the clearee and the people who sign up can see it.
+weekday and date of the run). On servers set up for it (see `RUN_CHANNEL_CATEGORY` in
+[src/config.js](src/config.js)) it always goes under that category; otherwise it's created in the same
+category the command was used in. Only you, the clearee and the people who sign up can see it.
 People are added when they sign up and removed if they leave.
 
 The private channel starts with a pinned copy of the run post (without the ping).
@@ -64,6 +66,10 @@ That roster is the only message the bot posts in the channel. Nobody is @mention
 - The first time you use `/createrun`, fill in the optional **timezone** option (for example
   `America/New_York` or `EST`) so the bot knows what "4 PM" means for you. It remembers it after that.
   You can change it any time with `/settimezone`.
+
+`/privaterun` works exactly like `/createrun` (same options), except it can only be used in one
+specific channel (see `PRIVATE_RUN_CHANNEL_ID` in [src/config.js](src/config.js); used anywhere
+else, it just replies telling you which channel to use), and its post never pings `@here` or a role.
 
 ## Signing up
 
@@ -211,8 +217,8 @@ it's submitted.
 A server can limit who creates runs and who signs up. These rules are set in [src/config.js](src/config.js):
 
 - `commandRoles`: only members with one of these roles can use `/createrun`, `/createrun-test`,
-  `/managerun` and `/runs`. **If a server doesn't set this, those commands are admin-only by default**
-  (see `/permissions` below to open them up to others).
+  `/privaterun`, `/managerun` and `/runs`. **If a server doesn't set this, those commands are
+  admin-only by default** (see `/permissions` below to open them up to others).
 - `signupRoles`: only members with one of these roles can sign up. Anyone can still press Leave.
   Open to everyone if not set.
 - `preferenceRoles`: only members with one of these roles can use `/setpreference`. Open to everyone
@@ -221,10 +227,10 @@ A server can limit who creates runs and who signs up. These rules are set in [sr
 
 Server admins (Administrator permission) can always use every command regardless of these rules.
 
-An admin can also use `/permissions` to grant or revoke `/createrun`, `/managerun`, `/runs` or
-`/setpreference` access for a specific role or member, on top of (or instead of) `commandRoles` —
-this is how you let non-admins use those commands without making them admins. `/permissions list`
-shows every extra grant in the server.
+An admin can also use `/permissions` to grant or revoke `/createrun`, `/privaterun`, `/managerun`,
+`/runs` or `/setpreference` access for a specific role or member, on top of (or instead of)
+`commandRoles` — this is how you let non-admins use those commands without making them admins.
+`/permissions list` shows every extra grant in the server.
 
 ## Commands
 
@@ -232,6 +238,7 @@ shows every extra grant in the server.
 |---|---|
 | `/createrun` | Post a new run and create its private channel |
 | `/createrun-test` | (Disabled) Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
+| `/privaterun` | Same as `/createrun`, but restricted to one channel and never pings anyone |
 | `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
 | `/runs` | List current runs by name, clearee, date and a link to each private channel (no post content) |
 | `/settimezone` | Save or change your timezone |

@@ -22,7 +22,9 @@ import { DateTime } from 'luxon';
 import {
   ACTIVE_ROSTER_ROLE,
   DEFAULT_RUN_START_PING,
+  PRIVATE_RUN_CHANNEL_ID,
   RESTRICTED_COMMANDS,
+  RUN_CHANNEL_CATEGORY,
   RUN_START_PING,
   SERVER_RULES,
   START_PROMPT_ENABLED,
@@ -83,10 +85,11 @@ const reminderLabel = (m) => (m === 60 ? '1 hour before' : `${m} minutes before`
 
 // Commands an admin can grant/revoke access to for a specific role or member via /permissions,
 // on top of the server's normal commandRoles/preferenceRoles.
-const GRANTABLE_COMMANDS = ['createrun', 'managerun', 'runs', 'setpreference'];
+const GRANTABLE_COMMANDS = ['createrun', 'privaterun', 'managerun', 'runs', 'setpreference'];
 
 const COMMAND_BLURBS = {
   createrun: 'Post a new run and create its private channel',
+  privaterun: 'Like /createrun, but restricted to one channel, and never pings anyone',
   managerun: 'Mark a run completed or failed, reschedule it, edit its roster, or delete it',
   runs: 'List current runs and their private channels',
   setpreference: 'Save your usual roles/jobs and choose DM reminder times',
@@ -150,6 +153,7 @@ const commands = [
   runCommand('createrun', 'Create a run post that people can sign up for'),
   // Disabled for now. Uncomment to bring back /createrun-test (its handler is still below).
   // runCommand('createrun-test', '[Test] Create a run with a Merc Run ID and its own private channel'),
+  runCommand('privaterun', 'Like /createrun, but restricted to one channel, and never pings anyone'),
   new SlashCommandBuilder()
     .setName('managerun')
     .setDescription('Mark a run completed or failed, reschedule it, edit its roster, or delete it')
@@ -665,10 +669,11 @@ const MEMBER_ALLOW = [
 async function createPrivateChannel(interaction, run, name) {
   const { guild } = interaction;
   const inCategory = interaction.channel?.parent?.type === ChannelType.GuildCategory;
+  const parent = RUN_CHANNEL_CATEGORY[run.guildId] ?? (inCategory ? interaction.channel.parentId : null);
   return guild.channels.create({
     name,
     type: ChannelType.GuildText,
-    parent: inCategory ? interaction.channel.parentId : null,
+    parent,
     topic: `Merc Run ID ${run.runId}: ${run.title}`.slice(0, 1024),
     reason: `Merc run ${run.runId} created by ${interaction.user.tag}`,
     permissionOverwrites: [
@@ -950,7 +955,7 @@ async function resolveClearee(guild, input, fallbackKey) {
 
 const cleareeLabel = (name, jobs, role) => `${name} ` + (jobs.length ? `(${jobs.join('/')}) - ${role}` : role);
 
-async function handleCreateRun(interaction, { test = false } = {}) {
+async function handleCreateRun(interaction, { test = false, noPing = false, requiredChannelId = null } = {}) {
   const amount = noMassPing(interaction.options.getString('amount', true));
   const text = noMassPing(interaction.options.getString('merc_run_type', true));
   const timeInput = interaction.options.getString('time', true);
@@ -964,6 +969,9 @@ async function handleCreateRun(interaction, { test = false } = {}) {
 
   if (!interaction.inGuild()) {
     return interaction.reply(ephemeral('This command only works in a server.'));
+  }
+  if (requiredChannelId && interaction.channelId !== requiredChannelId) {
+    return interaction.reply(ephemeral(`This command can only be used in <#${requiredChannelId}>.`));
   }
 
   const main = checkJobInput(role, jobInput, 'job', true);
@@ -1027,7 +1035,7 @@ async function handleCreateRun(interaction, { test = false } = {}) {
   // The main clearee is named, not @mentioned, in the channel the run is posted in.
   const who = cleareeLabel(cleareeName, jobs, role) + (extra ? ` & ${cleareeLabel(extraShown, extraJobs, extraRole)}` : '');
   const header = `${amount} ${text} for ${who} @ <t:${parsed.ts}:f>`;
-  const ping = pingFor(interaction.guildId);
+  const ping = noPing ? { text: null, allowedMentions: { parse: [] }, roleId: null } : pingFor(interaction.guildId);
   const run = {
     header,
     ping: ping.text,
@@ -1104,7 +1112,7 @@ async function handleCreateRun(interaction, { test = false } = {}) {
   const pingRole = ping.roleId && interaction.guild.roles.cache.get(ping.roleId);
   const canPing = post.channel.permissionsFor(me)?.has(PermissionFlagsBits.MentionEveryone) ||
     (pingRole && pingRole.mentionable);
-  if (!canPing) {
+  if (!noPing && !canPing) {
     done += `\n⚠️ I don't have **Mention @everyone, @here and All Roles** here, so ${ping.text} didn't notify anyone.`;
   }
   if (!cleareeMember) {
@@ -2002,6 +2010,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       switch (interaction.commandName) {
         case 'createrun': return await handleCreateRun(interaction);
         case 'createrun-test': return await handleCreateRun(interaction, { test: true });
+        case 'privaterun':
+          return await handleCreateRun(interaction, { noPing: true, requiredChannelId: PRIVATE_RUN_CHANNEL_ID });
         case 'managerun': return await handleManageRun(interaction);
         case 'runs': return await handleListRuns(interaction);
         case 'settimezone': return await handleSetTimezone(interaction);
