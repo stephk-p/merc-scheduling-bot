@@ -14,10 +14,16 @@ import { DateTime, FixedOffsetZone } from 'luxon';
 export function parseTime(input, zone) {
   const raw = input.trim();
 
+  // Rejects anything already in the past, whether typed, pasted as a Discord timestamp, or parsed.
+  const checkFuture = (result) =>
+    (result.ts * 1000 <= Date.now()
+      ? { error: "That time has already passed. Enter a date and time in the future." }
+      : result);
+
   const stamp = raw.match(/^<t:(-?\d+)(?::[tTdDfFR])?>$/) || raw.match(/^(\d{9,11})$/);
   if (stamp) {
     const ts = Number(stamp[1]);
-    return { ts, date: DateTime.fromSeconds(ts, { zone: zone ?? 'UTC' }) };
+    return checkFuture({ ts, date: DateTime.fromSeconds(ts, { zone: zone ?? 'UTC' }) });
   }
 
   const cleaned = raw.replace(/@/g, ' at ').replace(/\s+/g, ' ');
@@ -37,7 +43,7 @@ export function parseTime(input, zone) {
   if (start.isCertain('timezoneOffset')) {
     const ts = Math.floor(start.date().getTime() / 1000);
     const offset = FixedOffsetZone.instance(start.get('timezoneOffset') ?? 0);
-    return { ts, date: DateTime.fromSeconds(ts, { zone: offset }) };
+    return checkFuture({ ts, date: DateTime.fromSeconds(ts, { zone: offset }) });
   }
 
   if (!zone) {
@@ -61,5 +67,5 @@ export function parseTime(input, zone) {
   );
 
   if (!dt.isValid) return { error: `That time doesn't exist in ${zone}.` };
-  return { ts: Math.floor(dt.toSeconds()), date: dt };
+  return checkFuture({ ts: Math.floor(dt.toSeconds()), date: dt });
 }
