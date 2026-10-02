@@ -1595,6 +1595,10 @@ async function handleAdoptRun(interaction) {
   }
 
   const runId = newRunId();
+  // No separate public channel for this run — posting Sign up/Leave/Manage Signup buttons there would
+  // just duplicate the roster the private channel already shows, so this run is managed entirely
+  // through /managerun's Edit roster instead.
+  const sameChannel = privateChannel.id === post.channelId;
   const run = {
     header: parsed.header,
     ping: null,
@@ -1603,6 +1607,7 @@ async function handleAdoptRun(interaction) {
     signups: parsed.signups,
     placed: parsed.placed,
     manualLabels: parsed.manualLabels,
+    buttonless: sameChannel,
     status: 'open',
     runId,
     showId: false,
@@ -1628,7 +1633,7 @@ async function handleAdoptRun(interaction) {
   try {
     newPost = await channel.send({
       content: rendered.content,
-      components: [runButtons()],
+      components: sameChannel ? [] : [runButtons()],
       allowedMentions: { parse: [] },
     });
   } catch (err) {
@@ -1642,9 +1647,8 @@ async function handleAdoptRun(interaction) {
 
   // Picks up a roster copy the bot already posted in the private channel (e.g. this run was adopted
   // before roster copies existed), or posts a fresh pinned one — same as /createrun. Skipped when the
-  // "private channel" is the same channel the post itself was just reposted in, since that repost
-  // (with Sign up/Leave/Manage Signup) already covers it there — a second copy would just be a duplicate.
-  const sameChannel = privateChannel.id === newPost.channelId;
+  // private channel is the same channel the post itself was just reposted in (buttonless, above) —
+  // that repost already is the roster there, so a second copy would just be a duplicate.
   if (!sameChannel) await syncRosterCopy(newPost.id, run, rendered.content);
 
   const manualCount = Object.keys(parsed.manualLabels).length;
@@ -1656,6 +1660,8 @@ async function handleAdoptRun(interaction) {
         'Found no sign-ups in the original post. '}` +
       `${manualCount ? `${manualCount} of them had no @mention, so they're shown by name for now — replace them ` +
         "with a real member any time using `/managerun`'s Edit roster. " : ''}` +
+      `${sameChannel ? 'Since the private channel is the same as the post\'s channel, this repost has no Sign up/' +
+        "Leave buttons — manage sign-ups entirely with `/managerun`'s Edit roster. " : ''}` +
       `The original post won't update anymore since I can only edit messages I posted myself — feel free to delete it. ` +
       `Use \`/managerun run_id:${runId}\` to manage the new one from here on.`,
     flags: MessageFlags.Ephemeral,
@@ -1724,7 +1730,9 @@ async function updatePost(messageId, run) {
   const rendered = render(run);
   run.placed = rendered.placed;
   const content = rendered.content;
-  const components = [runButtons(isClosed(run))];
+  // A run adopted into its own "private channel" (no separate public post) never gets Sign up/Leave/
+  // Manage Signup buttons there — it's managed entirely through /managerun's Edit roster instead.
+  const components = run.buttonless ? [] : [runButtons(isClosed(run))];
 
   const post = channel && (await channel.messages.fetch(messageId).catch(() => null));
   if (post) {
