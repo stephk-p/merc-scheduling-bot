@@ -451,7 +451,7 @@ function detailsModal(messageId, run) {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId('time')
-          .setLabel('New time (leave blank to keep the current one)')
+          .setLabel('New time (blank = keep current)')
           .setPlaceholder('e.g. sept 30 @ 8 PM')
           .setStyle(TextInputStyle.Short)
           .setRequired(false)
