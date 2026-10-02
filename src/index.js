@@ -85,11 +85,12 @@ const reminderLabel = (m) => (m === 60 ? '1 hour before' : `${m} minutes before`
 
 // Commands an admin can grant/revoke access to for a specific role or member via /permissions,
 // on top of the server's normal commandRoles/preferenceRoles.
-const GRANTABLE_COMMANDS = ['createrun', 'privaterun', 'managerun', 'runs', 'setpreference'];
+const GRANTABLE_COMMANDS = ['createrun', 'privaterun', 'adoptrun', 'managerun', 'runs', 'setpreference'];
 
 const COMMAND_BLURBS = {
   createrun: 'Post a new run and create its private channel',
   privaterun: 'Like /createrun, but restricted to one channel, and never pings anyone',
+  adoptrun: "Attach a Merc Run ID to a manually posted run so the bot can manage it",
   managerun: 'Mark a run completed or failed, reschedule it, edit its roster, or delete it',
   runs: 'List current runs and their private channels',
   setpreference: 'Save your usual roles/jobs and choose DM reminder times',
@@ -167,6 +168,23 @@ const commands = [
   new SlashCommandBuilder()
     .setName('runs')
     .setDescription('List current runs and their private channels'),
+  new SlashCommandBuilder()
+    .setName('adoptrun')
+    .setDescription('Attach a Merc Run ID to a manually posted run so the bot can manage it')
+    .addStringOption((o) =>
+      o.setName('message_id')
+        .setDescription("The run post's message ID (use this command in the same channel as the post)")
+        .setRequired(true)
+        .setMaxLength(32))
+    .addChannelOption((o) =>
+      o.setName('private_channel')
+        .setDescription('The private channel already made for this run')
+        .addChannelTypes(ChannelType.GuildText)
+        .setRequired(true))
+    .addStringOption((o) =>
+      o.setName('time')
+        .setDescription("Only needed if the post doesn't already have a Discord timestamp")
+        .setMaxLength(100)),
   new SlashCommandBuilder()
     .setName('setpreference')
     .setDescription('Save your usual roles and jobs so Sign up is filled in for you'),
@@ -507,7 +525,7 @@ function pingFor(guildId) {
 // The clearee is shown by name in the run post instead of being @mentioned. `cleareeKey` is the
 // ID used for their roster slot: their user ID, or a placeholder if they aren't a server member.
 function labelsFor(run) {
-  const labels = {};
+  const labels = { ...run.manualLabels };
   const key = run.cleareeKey ?? run.cleareeId;
   if (key && run.cleareeName) labels[key] = run.cleareeName;
   if (run.extraCleareeKey && run.extraCleareeName && !run.extraCleareePinged) {
@@ -1396,6 +1414,83 @@ async function handleListRuns(interaction) {
   return interaction.reply({ content: lines.join('\n'), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
 }
 
+/**
+ * Attaches a Merc Run ID to a run someone posted by hand (not through /createrun), so the bot
+ * starts managing it like any other run: DM reminders, the "starting soon"/active-roster role,
+ * deleting the private channel on completion, /managerun, all of it. Reuses the same roster
+ * parsing already used to recover runs when saved data is lost, so sign-ups, the waitlist and the
+ * bench are only picked up if the post used real @mentions, same as the bot's own posts do.
+ */
+async function handleAdoptRun(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+
+  const messageId = interaction.options.getString('message_id', true).trim();
+  const privateChannel = interaction.options.getChannel('private_channel', true);
+  const timeInput = interaction.options.getString('time')?.trim();
+
+  if (getRun(messageId)) return interaction.reply(ephemeral('That message is already a tracked run.'));
+
+  const channel = interaction.channel ?? (await client.channels.fetch(interaction.channelId).catch(() => null));
+  const post = channel && (await channel.messages.fetch(messageId).catch(() => null));
+  if (!post) {
+    return interaction.reply(ephemeral(
+      `Couldn't find a message with that ID in this channel. Use \`/adoptrun\` in the same channel as the post.`,
+    ));
+  }
+
+  const parsed = parsePost(post.content);
+  const tsMatch = parsed.header.match(/<t:(-?\d+)/);
+  let startsAt = tsMatch ? Number(tsMatch[1]) : null;
+  if (!startsAt) {
+    if (!timeInput) {
+      return interaction.reply(ephemeral(
+        "That post doesn't have a Discord timestamp, so fill in the `time` option too.",
+      ));
+    }
+    const time = parseTime(timeInput, getUserZone(interaction.user.id));
+    if (time.error) return interaction.reply(ephemeral(time.error));
+    startsAt = time.ts;
+  }
+
+  const runId = newRunId();
+  const run = {
+    header: parsed.header,
+    ping: null,
+    title: parsed.header,
+    startsAt,
+    signups: parsed.signups,
+    placed: parsed.placed,
+    status: 'open',
+    runId,
+    showId: false,
+    guildId: interaction.guildId,
+    channelId: post.channelId,
+    privateChannelId: privateChannel.id,
+    channelDeleteAt: null,
+    creatorId: interaction.user.id,
+    cleareeId: null,
+    cleareeKey: null,
+    cleareeName: null,
+    extraCleareeId: null,
+    extraCleareeKey: null,
+    extraCleareeName: null,
+    extraCleareePinged: false,
+  };
+
+  setRun(post.id, run);
+  await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
+  for (const userId of channelMembers(run)) await addToPrivateChannel(run, userId);
+
+  const signupCount = run.signups.length;
+  return interaction.reply({
+    content: `✅ Attached Merc Run ID **${runId}** to that post, linked to <#${privateChannel.id}>. ` +
+      `${signupCount ? `Picked up ${signupCount} sign-up(s) from the post. ` : "Found no sign-ups in the post (only real @mentions are recognized) — add them with \`/managerun\`'s Edit roster. "}` +
+      `Use \`/managerun run_id:${runId}\` to manage it from here on, same as any other run.`,
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // /managerun actions
 // ---------------------------------------------------------------------------
@@ -1787,7 +1882,7 @@ async function handleSelect(interaction, messageId, kind, targetId = null) {
   }
 
   const userId = targetId ?? interaction.user.id;
-  const who = targetId ? `<@${targetId}>` : null;
+  const who = targetId ? (labelsFor(run)[targetId] ?? `<@${targetId}>`) : null;
   const { others, status } = viewFor(run, userId);
   const signup = selectionToSignup(userId, values, jobs);
   const preview = render(run, [...others, signup]);
@@ -1910,6 +2005,8 @@ async function editPanel(interaction, messageId, run, note = '') {
     ));
   }
   rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`edit:addname:${messageId}`).setLabel('Add by name').setEmoji('⌨️')
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`manage:cancel:${messageId}`).setLabel('Back').setStyle(ButtonStyle.Secondary),
   ));
 
@@ -1917,6 +2014,23 @@ async function editPanel(interaction, messageId, run, note = '') {
     'first menu, or remove people with the second. Slots, flex moves and the waitlist update like normal sign-ups.';
   const content = [note, intro, '', rosterCopyContent(run, render(run).content)].filter((l, i) => i || l).join('\n');
   return { content: content.slice(0, 2000), components: rows, allowedMentions: { parse: [] } };
+}
+
+function addByNameModal(messageId) {
+  return new ModalBuilder()
+    .setCustomId(`edit:addname-submit:${messageId}`)
+    .setTitle('Add to roster by name')
+    .addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId('name')
+          .setLabel('Name (matches a server member if one exists)')
+          .setPlaceholder('A Discord mention/username, or just type any name')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(100),
+      ),
+    );
 }
 
 async function handleEditAdd(interaction, messageId) {
@@ -1936,6 +2050,46 @@ async function handleEditAdd(interaction, messageId) {
       '. Saving a new pick replaces that and puts them at the back of the line.'
     : `Pick the role(s) and jobs for <@${userId}>.`;
   return interaction.update({
+    content: intro,
+    components: rolePicker('edit', `${messageId}:${userId}`, status,
+      mine ? selectionValues(mine) : [], mine?.jobs ?? [], mine ? checkSelection(mine).ok : false),
+    allowedMentions: { parse: [] },
+  });
+}
+
+/** Same as handleEditAdd, but for a typed name instead of a picked Discord user. */
+async function handleAddByNameSubmit(interaction, messageId) {
+  const run = getRun(messageId);
+  if (!run) return interaction.reply(ephemeral('That run no longer exists.'));
+  if (!canManage(interaction, run)) return interaction.reply(ephemeral(notManagerText(interaction)));
+
+  const input = interaction.fields.getTextInputValue('name').trim();
+  if (!input) return interaction.reply(ephemeral('Type a name first.'));
+
+  const member = await findClearee(interaction.guild, input);
+  if (member?.user.bot) return interaction.reply(ephemeral("Bots can't be added to the roster."));
+
+  // A real member uses their user ID like normal; otherwise a placeholder key with a saved label.
+  const userId = member?.id ?? `manual-${Math.random().toString(36).slice(2, 8)}`;
+  if (!member && !run.signups.some((s) => s.userId === userId)) {
+    run.manualLabels = { ...run.manualLabels, [userId]: escapeMarkdown(noMassPing(input)) };
+    setRun(messageId, run);
+  }
+
+  const mine = run.signups.find((s) => s.userId === userId);
+  const { status } = viewFor(run, userId);
+  const label = member ? `<@${userId}>` : run.manualLabels[userId];
+
+  if (interaction.isFromMessage()) await interaction.deferUpdate();
+  else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const intro = mine
+    ? `${label} is signed up as **${describeSignup(mine)}**` +
+      (mine.jobs?.length ? ` (${describeJobs(mine)})` : '') +
+      '. Saving a new pick replaces that and puts them at the back of the line.'
+    : `Pick the role(s) and jobs for ${label}.`;
+
+  return interaction.editReply({
     content: intro,
     components: rolePicker('edit', `${messageId}:${userId}`, status,
       mine ? selectionValues(mine) : [], mine?.jobs ?? [], mine ? checkSelection(mine).ok : false),
@@ -1967,9 +2121,10 @@ async function handleEditConfirm(interaction, messageId, userId, encodedValues, 
     await updatePost(messageId, run);
     setRun(messageId, run);
     await syncActiveRosterRole(run.guildId, interaction.guild, signups.map((s) => s.userId));
-    if (isNew) await addToPrivateChannel(run, userId);
+    if (isNew && isUserId(userId)) await addToPrivateChannel(run, userId);
+    const who = labelsFor(run)[userId] ?? `<@${userId}>`;
     return interaction.editReply(await editPanel(interaction, messageId, run,
-      outcomeText(signup, rendered, false, `<@${userId}>`)));
+      outcomeText(signup, rendered, false, who)));
   });
 }
 
@@ -1989,7 +2144,9 @@ async function handleEditRemove(interaction, messageId) {
     setRun(messageId, run);
     await syncActiveRosterRole(run.guildId, interaction.guild,
       [...run.signups.map((s) => s.userId), ...removed.map((s) => s.userId)]);
-    for (const s of removed) await removeFromPrivateChannel(run, s.userId);
+    for (const s of removed) {
+      if (isUserId(s.userId)) await removeFromPrivateChannel(run, s.userId);
+    }
 
     const labels = labelsFor(run);
     const names = removed.map((s) => labels[s.userId] ?? `<@${s.userId}>`).join(', ');
@@ -2167,6 +2324,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'createrun-test': return await handleCreateRun(interaction, { test: true });
         case 'privaterun':
           return await handleCreateRun(interaction, { noPing: true, requiredChannelId: PRIVATE_RUN_CHANNEL_ID });
+        case 'adoptrun': return await handleAdoptRun(interaction);
         case 'managerun': return await handleManageRun(interaction);
         case 'runs': return await handleListRuns(interaction);
         case 'settimezone': return await handleSetTimezone(interaction);
@@ -2187,6 +2345,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
           if (!run) return await interaction.update({ content: 'That run no longer exists.', components: [] });
           if (!canManage(interaction, run)) return await interaction.update({ content: notManagerText(interaction), components: [] });
           return await interaction.update(await editPanel(interaction, messageId, run));
+        }
+        if (action === 'addname') {
+          const run = getRun(messageId);
+          if (!run) return await interaction.update({ content: 'That run no longer exists.', components: [] });
+          if (!canManage(interaction, run)) return await interaction.update({ content: notManagerText(interaction), components: [] });
+          return await interaction.showModal(addByNameModal(messageId));
         }
         return;
       }
@@ -2226,6 +2390,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const [ns, action, messageId] = interaction.customId.split(':');
       if (ns === 'manage' && action === 'reschedule-submit') return await handleRescheduleSubmit(interaction, messageId);
       if (ns === 'manage' && action === 'details-submit') return await handleDetailsSubmit(interaction, messageId);
+      if (ns === 'edit' && action === 'addname-submit') return await handleAddByNameSubmit(interaction, messageId);
     }
   } catch (err) {
     console.error(err);

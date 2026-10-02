@@ -6,7 +6,7 @@ export const OVERSEER_ROLE_ID = '1551648248593256498'; // UMAD: "overseer"
 // Per-server rules. Servers that aren't listed here get the defaults noted below.
 //
 //   commandRoles - only members with at least one of these roles can use
-//                  /createrun, /createrun-test, /privaterun, /managerun and /runs.
+//                  /createrun, /createrun-test, /privaterun, /adoptrun, /managerun and /runs.
 //                  Not set: only server admins (plus anyone granted access via /permissions).
 //   signupRoles  - only members with at least one of these roles can sign up for runs
 //                  (anyone can still press Leave). Not set: open to everyone.
@@ -56,5 +56,5 @@ export const RUN_CHANNEL_CATEGORY = {
 export const PRIVATE_RUN_CHANNEL_ID = '1555479625851732028';
 
 /** Commands that are limited by `commandRoles`. */
-export const RESTRICTED_COMMANDS = ['createrun', 'createrun-test', 'privaterun', 'managerun', 'runs'];
+export const RESTRICTED_COMMANDS = ['createrun', 'createrun-test', 'privaterun', 'adoptrun', 'managerun', 'runs'];
 

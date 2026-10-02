@@ -174,11 +174,27 @@ You can start typing the ID or the run name and pick it from the list. You get t
 | **Completed** | The post is marked completed and sign-ups close. The run disappears from the `/managerun` list, and the private channel is deleted 3 hours later. |
 | **Failed** | The post is marked failed and sign-ups close. The channel stays so you can plan a retry. |
 | **Reschedule** | Enter a new time. The post is updated and sign-ups reopen. `/createrun` channels are renamed to the new day. |
-| **Edit roster** | Add someone (pick them, then their roles and jobs like a normal sign-up), change someone's pick, or remove people. Flex moves, the waitlist and the private channel update just like normal sign-ups and leaves. |
+| **Edit roster** | Add someone (pick them, then their roles and jobs like a normal sign-up), change someone's pick, or remove people. Flex moves, the waitlist and the private channel update just like normal sign-ups and leaves. "Add by name" lets you type a name instead of picking a Discord member — it still matches a real member if one exists, otherwise it's just shown as text. |
 | **Edit details** | Change the amount, merc run type and/or time (time is optional — leave it blank to keep the current one). The roster, status and private channel membership are untouched; the channel is just renamed if the title or day changed. |
 | **Delete run** | Deletes the post and the channel right away (asks you to confirm first). |
 
 If a run's private channel is deleted, whether by the bot or by hand, the run is removed from `/managerun` too.
+
+### Adopting a manually posted run
+
+If someone posts a run by hand (not through `/createrun`) with its own private channel, use `/adoptrun` in the
+**same channel as the post** to bring it under the bot's management:
+
+```
+/adoptrun message_id:<the post's message ID> private_channel:#the-private-channel [time:...]
+```
+
+This attaches a Merc Run ID to it, so it gets DM reminders, the active-roster role, the "starting soon" ping,
+and gets its private channel deleted automatically when marked completed — same as a run created with
+`/createrun`. Sign-ups, the waitlist and the bench are picked up from the post if they're real `@mentions`
+(same recovery logic used if `data/runs.json` is ever lost); plain-text names in the post aren't recognized,
+add them afterward with `/managerun`'s Edit roster. Fill in `time` only if the post doesn't already contain a
+Discord timestamp (`<t:...>`).
 
 Only the person who created the run, or anyone with the Manage Channels permission, can use `/managerun` on it.
 
@@ -225,8 +241,8 @@ not just when they first sign up.
 A server can limit who creates runs and who signs up. These rules are set in [src/config.js](src/config.js):
 
 - `commandRoles`: only members with one of these roles can use `/createrun`, `/createrun-test`,
-  `/privaterun`, `/managerun` and `/runs`. **If a server doesn't set this, those commands are
-  admin-only by default** (see `/permissions` below to open them up to others).
+  `/privaterun`, `/adoptrun`, `/managerun` and `/runs`. **If a server doesn't set this, those
+  commands are admin-only by default** (see `/permissions` below to open them up to others).
 - `signupRoles`: only members with one of these roles can sign up. Anyone can still press Leave.
   Open to everyone if not set.
 - `preferenceRoles`: only members with one of these roles can use `/setpreference`. Open to everyone
@@ -235,10 +251,10 @@ A server can limit who creates runs and who signs up. These rules are set in [sr
 
 Server admins (Administrator permission) can always use every command regardless of these rules.
 
-An admin can also use `/permissions` to grant or revoke `/createrun`, `/privaterun`, `/managerun`,
-`/runs` or `/setpreference` access for a specific role or member, on top of (or instead of)
-`commandRoles` — this is how you let non-admins use those commands without making them admins.
-`/permissions list` shows every extra grant in the server.
+An admin can also use `/permissions` to grant or revoke `/createrun`, `/privaterun`, `/adoptrun`,
+`/managerun`, `/runs` or `/setpreference` access for a specific role or member, on top of (or
+instead of) `commandRoles` — this is how you let non-admins use those commands without making
+them admins. `/permissions list` shows every extra grant in the server.
 
 ## Commands
 
@@ -247,6 +263,7 @@ An admin can also use `/permissions` to grant or revoke `/createrun`, `/privater
 | `/createrun` | Post a new run and create its private channel |
 | `/createrun-test` | (Disabled) Same as `/createrun`, with the Merc Run ID on the post and a `merc-run-<id>` channel |
 | `/privaterun` | Same as `/createrun`, but restricted to one channel and never pings anyone |
+| `/adoptrun` | Attach a Merc Run ID to a manually posted run so the bot can manage it |
 | `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
 | `/runs` | List current runs by name, clearee, date and a link to each private channel (no post content) |
 | `/settimezone` | Save or change your timezone |
