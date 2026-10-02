@@ -207,11 +207,14 @@ If someone posts a run by hand (not through `/createrun`) with its own private c
 This attaches a Merc Run ID to it, so it gets DM reminders, the active-roster role, the "starting soon" ping,
 and gets its private channel deleted automatically when marked completed — same as a run created with
 `/createrun`. Since the bot can only edit messages it posted itself, it **reposts a fresh copy right below the
-original** (with the Sign up/Leave buttons) and manages that one from then on — the original post is left as-is
-and stops updating, so delete it once you've checked the repost looks right. Sign-ups, the waitlist and the
-bench are picked up from the original post if they're real `@mentions` (same recovery logic used if
-`data/runs.json` is ever lost); plain-text names in the post aren't recognized, add them afterward with
-`/managerun`'s Edit roster. Fill in `time` only if the post doesn't already contain a Discord timestamp (`<t:...>`).
+original** (with the Sign up/Leave/Manage Signup buttons) and manages that one from then on — the original post
+is left as-is and stops updating, so delete it once you've checked the repost looks right. If `private_channel`
+is the same channel the post is in, only that one repost is made there (no separate roster copy, since it
+would just duplicate it) — the pinned roster copy is only posted when the private channel is a different one.
+Sign-ups, the waitlist and the bench are picked up from the original post (same recovery logic used if
+`data/runs.json` is ever lost): real `@mentions` are picked up as normal, and a plain-text name (no `@mention`)
+is kept too, shown under its name until you replace it with a real member using `/managerun`'s Edit roster.
+Fill in `time` only if the post doesn't already contain a Discord timestamp (`<t:...>`).
 
 Only the person who created the run, or anyone with the Manage Channels permission, can use `/managerun` on it.
 

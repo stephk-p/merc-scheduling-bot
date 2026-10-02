@@ -186,14 +186,32 @@ export function renderRun(header, signups, placed = {}, labels = {}) {
 }
 
 const SLOT_RE =
-  /^(MT|OT|H1|H2|M1|M2|R1|R2) -\s*(?:<@!?(\d+)>)?(?:\s*\(([A-Z]{3}(?:\/[A-Z]{3})*)\))?(?:\s*\(flex: ([A-Z0-9/]+)\))?/;
-const ENTRY_RE = /<@!?(\d+)>(?:\s*\(([A-Z0-9/]+)\))?/g;
+  /^(MT|OT|H1|H2|M1|M2|R1|R2) -\s*(?:<@!?(\d+)>|([^\n(]+))?(?:\s*\(([A-Z]{3}(?:\/[A-Z]{3})*)\))?(?:\s*\(flex: ([A-Z0-9/]+)\))?\s*$/;
 const parseRoles = (text) => pickRoles((text ?? '').split('/'));
+
+/** A unique placeholder key for a plain-text name with no resolvable @mention, e.g. from /adoptrun. */
+function manualKeyFactory() {
+  let n = 0;
+  return () => `manual-parsed-${n++}`;
+}
+
+/** Splits a comma-separated Waitlist/Flex/Bench list into { mentionId|name, roles } entries. */
+function parseEntryList(text) {
+  if (!text) return [];
+  return text.split(', ').map((entry) => {
+    const mention = entry.match(/^<@!?(\d+)>\s*(?:\(([A-Z0-9/]+)\))?$/);
+    if (mention) return { mentionId: mention[1], roles: mention[2] };
+    const plain = entry.match(/^(.*?)\s*(?:\(([A-Z0-9/]+)\))?$/);
+    return { name: plain[1], roles: plain[2] };
+  });
+}
 
 /**
  * Rebuild sign-ups from a post's text. Used when a run has no saved state
  * (posts made before sign-up state was saved, or if data/runs.json was lost).
  * The exact sign-up order can't be recovered, so people already in a slot come first.
+ * Plain-text names (no @mention) are kept as placeholder sign-ups shown under `manualLabels`,
+ * the same mechanism `/managerun`'s "Add by name" uses, so they can be replaced with a real member there.
  */
 export function parsePost(content) {
   const all = content.split('\n');
@@ -206,30 +224,46 @@ export function parsePost(content) {
   const waiting = [];
   const bench = [];
   const placed = {};
+  const manualLabels = {};
+  const nextManualKey = manualKeyFactory();
+
+  // userId is the mention's ID, or a fresh placeholder key (with its label saved) for a plain name.
+  const resolve = (mentionId, name) => {
+    if (mentionId) return mentionId;
+    const key = nextManualKey();
+    manualLabels[key] = name.trim();
+    return key;
+  };
 
   for (const line of rest) {
     const m = line.match(SLOT_RE);
     if (m) {
-      if (!m[2]) continue;
-      const jobs = (m[3] ?? '').split('/').filter((j) => JOBS.includes(j));
+      if (!m[2] && !m[3]) continue;
+      const userId = resolve(m[2], m[3]);
+      const jobs = (m[4] ?? '').split('/').filter((j) => JOBS.includes(j));
       const withJobs = jobs.length ? { jobs } : {};
-      if (m[4]) {
-        inSlots.push({ userId: m[2], mode: 'flex', roles: parseRoles(m[4]), ...withJobs });
-        placed[m[2]] = m[1];
+      if (m[5]) {
+        inSlots.push({ userId, mode: 'flex', roles: parseRoles(m[5]), ...withJobs });
+        placed[userId] = m[1];
       } else {
-        inSlots.push({ userId: m[2], mode: 'firm', roles: [m[1]], ...withJobs });
+        inSlots.push({ userId, mode: 'firm', roles: [m[1]], ...withJobs });
       }
     } else if (line.startsWith('Waitlist - ') || line.startsWith('Flex - ')) {
-      for (const e of line.matchAll(ENTRY_RE)) {
-        const roles = parseRoles(e[2]);
-        waiting.push({ userId: e[1], mode: roles.length > 1 ? 'flex' : 'firm', roles });
+      const prefixLen = line.startsWith('Waitlist - ') ? 'Waitlist - '.length : 'Flex - '.length;
+      for (const e of parseEntryList(line.slice(prefixLen))) {
+        const userId = resolve(e.mentionId, e.name);
+        const roles = parseRoles(e.roles);
+        waiting.push({ userId, mode: roles.length > 1 ? 'flex' : 'firm', roles });
       }
     } else if (line.startsWith('Bench - ')) {
-      for (const e of line.matchAll(ENTRY_RE)) bench.push({ userId: e[1], mode: 'bench', roles: parseRoles(e[2]) });
+      for (const e of parseEntryList(line.slice('Bench - '.length))) {
+        const userId = resolve(e.mentionId, e.name);
+        bench.push({ userId, mode: 'bench', roles: parseRoles(e.roles) });
+      }
     }
   }
 
-  return { header, signups: [...inSlots, ...waiting, ...bench], placed };
+  return { header, signups: [...inSlots, ...waiting, ...bench], placed, manualLabels };
 }
 
 /**

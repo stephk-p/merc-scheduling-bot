@@ -877,7 +877,9 @@ async function findUntrackedRosterCopy(channel) {
  * Never throws.
  */
 async function syncRosterCopy(postId, run, postContent) {
-  if (!run.privateChannelId) return;
+  // Skipped when the "private channel" is the run's own channel (some manually-set-up runs adopted
+  // via /adoptrun use the same channel for both) — the run post there already shows the roster.
+  if (!run.privateChannelId || run.privateChannelId === run.channelId) return;
   try {
     const channel = await fetchPrivateChannel(run);
     if (!channel) return;
@@ -909,9 +911,12 @@ async function syncRosterCopy(postId, run, postContent) {
  * Checks the saved roster copy message still exists and recovers it if not — catches runs adopted
  * before roster copies existed (no ID ever saved) as well as a copy deleted by hand. Skips the full
  * recovery scan whenever the saved message still fetches fine, so this stays cheap to run on a timer.
+ * Skipped entirely when the private channel is the same as the run's own channel, since the run
+ * post there (with Sign up/Leave/Manage Signup) already serves as the roster — a copy would just
+ * be a duplicate.
  */
 async function ensureRosterCopy(messageId, run) {
-  if (!run.privateChannelId) return;
+  if (!run.privateChannelId || run.privateChannelId === run.channelId) return;
   const channel = await fetchPrivateChannel(run);
   if (!channel) return;
   if (run.rosterCopyId && (await channel.messages.fetch(run.rosterCopyId).catch(() => null))) return;
@@ -1597,6 +1602,7 @@ async function handleAdoptRun(interaction) {
     startsAt,
     signups: parsed.signups,
     placed: parsed.placed,
+    manualLabels: parsed.manualLabels,
     status: 'open',
     runId,
     showId: false,
@@ -1635,15 +1641,21 @@ async function handleAdoptRun(interaction) {
   for (const userId of channelMembers(run)) await addToPrivateChannel(run, userId);
 
   // Picks up a roster copy the bot already posted in the private channel (e.g. this run was adopted
-  // before roster copies existed), or posts a fresh pinned one — same as /createrun.
-  await syncRosterCopy(newPost.id, run, rendered.content);
+  // before roster copies existed), or posts a fresh pinned one — same as /createrun. Skipped when the
+  // "private channel" is the same channel the post itself was just reposted in, since that repost
+  // (with Sign up/Leave/Manage Signup) already covers it there — a second copy would just be a duplicate.
+  const sameChannel = privateChannel.id === newPost.channelId;
+  if (!sameChannel) await syncRosterCopy(newPost.id, run, rendered.content);
 
+  const manualCount = Object.keys(parsed.manualLabels).length;
   const signupCount = run.signups.length;
   return interaction.reply({
     content: `✅ Reposted this run as Merc Run ID **${runId}**: ${newPost.url}\n` +
       `Linked to <#${privateChannel.id}>. ` +
       `${signupCount ? `Picked up ${signupCount} sign-up(s) from the original post. ` :
-        "Found no sign-ups in the original post (only real @mentions are recognized) — add them with `/managerun`'s Edit roster. "}` +
+        'Found no sign-ups in the original post. '}` +
+      `${manualCount ? `${manualCount} of them had no @mention, so they're shown by name for now — replace them ` +
+        "with a real member any time using `/managerun`'s Edit roster. " : ''}` +
       `The original post won't update anymore since I can only edit messages I posted myself — feel free to delete it. ` +
       `Use \`/managerun run_id:${runId}\` to manage the new one from here on.`,
     flags: MessageFlags.Ephemeral,
