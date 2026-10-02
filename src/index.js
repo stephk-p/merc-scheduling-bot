@@ -884,6 +884,19 @@ async function syncRosterCopy(postId, run, postContent) {
   }
 }
 
+/**
+ * Checks the saved roster copy message still exists and recovers it if not — catches runs adopted
+ * before roster copies existed (no ID ever saved) as well as a copy deleted by hand. Skips the full
+ * recovery scan whenever the saved message still fetches fine, so this stays cheap to run on a timer.
+ */
+async function ensureRosterCopy(messageId, run) {
+  if (!run.privateChannelId) return;
+  const channel = await fetchPrivateChannel(run);
+  if (!channel) return;
+  if (run.rosterCopyId && (await channel.messages.fetch(run.rosterCopyId).catch(() => null))) return;
+  await syncRosterCopy(messageId, run, render(run).content);
+}
+
 // Rename a /createrun channel to the new day after a reschedule. Not awaited, because Discord
 // only allows 2 renames per channel every 10 minutes and would otherwise hold up the reply.
 function renameDayChannel(run, date) {
@@ -981,6 +994,8 @@ async function sweepReminders() {
     if (run.privateChannelId) {
       await syncChannelAccess(run)
         .catch((err) => console.error(`Couldn't sync channel access for run ${run.runId}:`, err.message));
+      await ensureRosterCopy(messageId, run)
+        .catch((err) => console.error(`Couldn't ensure the roster copy for run ${run.runId}:`, err.message));
     }
 
     if (run.status !== 'open' || !run.startsAt) continue;

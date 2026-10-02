@@ -187,7 +187,9 @@ If the run **post** is deleted instead, the next action taken on it (from `/mana
 fresh copy automatically and keeps managing that one, since the bot can only edit messages it posted itself.
 The pinned roster copy in the private channel is tracked and kept up to date independently of the run post
 itself — including picking up a roster copy a run already had (from before this existed, or from an older
-`/adoptrun`) instead of posting a duplicate, or posting one for the first time if it's missing.
+`/adoptrun`) instead of posting a duplicate, or posting one for the first time if it's missing. This is
+checked once a minute for every run, not just when something changes, so an old `/adoptrun` with no roster
+copy yet gets one without needing any action taken on it first.
 
 ### Adopting a manually posted run
 
