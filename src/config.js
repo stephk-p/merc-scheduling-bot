@@ -2,6 +2,7 @@
 export const UMAD_GUILD_ID = '1529143174872825916'; // "Ultimate Mercenary Acquisition Division"
 export const MERCS_ROLE_ID = '1529562550348288040'; // UMAD: "mercs"
 export const OVERSEER_ROLE_ID = '1551648248593256498'; // UMAD: "overseer"
+export const CLIENT_ROLE_ID = '1529564460660818112'; // UMAD: "client" — never gets the active roster role on its own
 
 // Per-server rules. Servers that aren't listed here get the defaults noted below.
 //
