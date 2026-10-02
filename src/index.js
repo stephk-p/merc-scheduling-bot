@@ -791,8 +791,13 @@ async function fetchPrivateChannel(run) {
   return client.channels.fetch(run.privateChannelId).catch(() => null);
 }
 
-/** Give a user access to the run's private channel (if it has one). No message is posted. */
+/**
+ * Give a user access to the run's private channel (if it has one). No message is posted. Skipped
+ * when the "private channel" is actually the run's own channel (buttonless /adoptrun) — there's no
+ * separate private channel to grant access to, and it's not meant to be access-controlled anyway.
+ */
 async function addToPrivateChannel(run, userId) {
+  if (run.privateChannelId === run.channelId) return;
   try {
     const channel = await fetchPrivateChannel(run);
     if (!channel || channel.permissionOverwrites.cache.has(userId)) return;
@@ -808,6 +813,7 @@ async function addToPrivateChannel(run, userId) {
 
 /** Remove a user from the run's private channel. The creator and clearee always keep access. No message is posted. */
 async function removeFromPrivateChannel(run, userId) {
+  if (run.privateChannelId === run.channelId) return;
   if ([run.creatorId, run.cleareeId, run.extraCleareeId].includes(userId)) return;
   try {
     const channel = await fetchPrivateChannel(run);
@@ -824,6 +830,7 @@ async function removeFromPrivateChannel(run, userId) {
  * since that's the only way to catch access lost outside the bot's own actions.
  */
 async function syncChannelAccess(run) {
+  if (run.privateChannelId === run.channelId) return;
   const channel = await fetchPrivateChannel(run);
   if (!channel) return;
   for (const userId of channelMembers(run)) {
@@ -1572,12 +1579,16 @@ async function handleAdoptRun(interaction) {
   const privateChannel = interaction.options.getChannel('private_channel', true);
   const timeInput = interaction.options.getString('time')?.trim();
 
+  // Deferred right away: fetching the post, reposting it, granting channel access and syncing the
+  // roster copy are all awaited network calls that can easily add up past Discord's 3-second ack window.
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const channel = interaction.channel ?? (await client.channels.fetch(interaction.channelId).catch(() => null));
   const post = channel && (await channel.messages.fetch(messageId).catch(() => null));
   if (!post) {
-    return interaction.reply(ephemeral(
+    return interaction.editReply(
       `Couldn't find a message with that ID in this channel. Use \`/adoptrun\` in the same channel as the post.`,
-    ));
+    );
   }
 
   const parsed = parsePost(post.content);
@@ -1585,12 +1596,10 @@ async function handleAdoptRun(interaction) {
   let startsAt = tsMatch ? Number(tsMatch[1]) : null;
   if (!startsAt) {
     if (!timeInput) {
-      return interaction.reply(ephemeral(
-        "That post doesn't have a Discord timestamp, so fill in the `time` option too.",
-      ));
+      return interaction.editReply("That post doesn't have a Discord timestamp, so fill in the `time` option too.");
     }
     const time = parseTime(timeInput, getUserZone(interaction.user.id));
-    if (time.error) return interaction.reply(ephemeral(time.error));
+    if (time.error) return interaction.editReply(time.error);
     startsAt = time.ts;
   }
 
@@ -1638,12 +1647,16 @@ async function handleAdoptRun(interaction) {
     });
   } catch (err) {
     console.error(`Couldn't repost run ${runId} during adoption:`, err);
-    return interaction.reply(ephemeral(`Couldn't post a copy here: ${err.message}`));
+    return interaction.editReply(`Couldn't post a copy here: ${err.message}`);
   }
 
   setRun(newPost.id, run);
   await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
-  for (const userId of channelMembers(run)) await addToPrivateChannel(run, userId);
+  // Buttonless runs have no separate private channel to grant access to (addToPrivateChannel already
+  // no-ops for them too, but skipping the loop avoids a pointless fetch per sign-up here).
+  if (!sameChannel) {
+    for (const userId of channelMembers(run)) await addToPrivateChannel(run, userId);
+  }
 
   // Picks up a roster copy the bot already posted in the private channel (e.g. this run was adopted
   // before roster copies existed), or posts a fresh pinned one — same as /createrun. Skipped when the
@@ -1653,7 +1666,7 @@ async function handleAdoptRun(interaction) {
 
   const manualCount = Object.keys(parsed.manualLabels).length;
   const signupCount = run.signups.length;
-  return interaction.reply({
+  return interaction.editReply({
     content: `✅ Reposted this run as Merc Run ID **${runId}**: ${newPost.url}\n` +
       `Linked to <#${privateChannel.id}>. ` +
       `${signupCount ? `Picked up ${signupCount} sign-up(s) from the original post. ` :
@@ -1664,7 +1677,6 @@ async function handleAdoptRun(interaction) {
         "Leave buttons — manage sign-ups entirely with `/managerun`'s Edit roster. " : ''}` +
       `The original post won't update anymore since I can only edit messages I posted myself — feel free to delete it. ` +
       `Use \`/managerun run_id:${runId}\` to manage the new one from here on.`,
-    flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });
 }

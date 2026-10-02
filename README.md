@@ -212,7 +212,8 @@ once you've checked the repost looks right. If `private_channel` is a different 
 repost gets the usual Sign up/Leave/Manage Signup buttons there, plus its own pinned roster copy in the private
 channel, same as `/createrun`. If `private_channel` is the **same** channel the post is in, the repost has no
 buttons instead (a second buttoned post would just duplicate the roster already shown there) — sign-ups are
-managed entirely through `/managerun`'s Edit roster for that run.
+managed entirely through `/managerun`'s Edit roster for that run, and nobody's given individual access to that
+channel, since it isn't being treated as a private channel at all.
 Sign-ups, the waitlist and the bench are picked up from the original post (same recovery logic used if
 `data/runs.json` is ever lost): real `@mentions` are picked up as normal, and a plain-text name (no `@mention`)
 is kept too, shown under its name until you replace it with a real member using `/managerun`'s Edit roster.
