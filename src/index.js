@@ -1481,17 +1481,20 @@ const MAX_MANUAL_ACCESS_ATTEMPTS = 3;
 
 /**
  * For plain-text names picked up from /adoptrun (no @mention), checks whether a real member with a
- * matching name exists and grants them individual access to the private channel if so — the roster
- * still shows the plain name until a manager swaps them in with /managerun's Edit roster. Gives up on
- * an entry (ambiguous name, or nobody matching) after a few attempts instead of searching forever.
+ * matching name exists. If so, grants them individual access to the private channel and swaps their
+ * placeholder sign-up over to their real user ID (so the roster shows an @mention from then on,
+ * keeping their place/roles/jobs as-is) — unless they're somehow already signed up under their real
+ * ID too, in which case only access is granted. Gives up on an entry (ambiguous name, or nobody
+ * matching) after a few attempts instead of searching forever.
  */
 async function resolveManualAccess(guild, run) {
   const manualIds = new Set(run.signups.map((s) => s.userId).filter((id) => id.startsWith('manual-')));
-  if (!manualIds.size) return { granted: 0, changed: false };
+  if (!manualIds.size) return { granted: 0, changed: false, rosterChanged: false };
 
   const attempts = { ...run.manualAccessAttempts };
   let granted = 0;
   let changed = false;
+  let rosterChanged = false;
 
   for (const key of manualIds) {
     if (attempts[key] === 'granted' || (attempts[key] ?? 0) >= MAX_MANUAL_ACCESS_ATTEMPTS) continue;
@@ -1502,6 +1505,15 @@ async function resolveManualAccess(guild, run) {
     changed = true;
     if (match && !match.user.bot) {
       await addToPrivateChannel(run, match.id);
+      if (!run.signups.some((s) => s.userId === match.id)) {
+        for (const s of run.signups) if (s.userId === key) s.userId = match.id;
+        if (run.placed[key]) {
+          run.placed[match.id] = run.placed[key];
+          delete run.placed[key];
+        }
+        delete run.manualLabels[key];
+        rosterChanged = true;
+      }
       attempts[key] = 'granted';
       granted++;
     } else {
@@ -1510,7 +1522,7 @@ async function resolveManualAccess(guild, run) {
   }
 
   if (changed) run.manualAccessAttempts = attempts;
-  return { granted, changed };
+  return { granted, changed, rosterChanged };
 }
 
 /**
@@ -1543,6 +1555,7 @@ async function handleFixRun(interaction) {
   let fixed = 0;
   let failed = 0;
   let grantedAccess = 0;
+  let rosterUpdated = 0;
   for (const [messageId, run] of targets) {
     const hadCopy = Boolean(run.rosterCopyId);
     try {
@@ -1554,9 +1567,16 @@ async function handleFixRun(interaction) {
     }
 
     try {
-      const { granted, changed } = await resolveManualAccess(interaction.guild, run);
+      const { granted, changed, rosterChanged } = await resolveManualAccess(interaction.guild, run);
       grantedAccess += granted;
-      if (changed) setRun(messageId, run);
+      if (rosterChanged) {
+        const postId = await updatePost(messageId, run);
+        setRun(postId ?? messageId, run);
+        await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
+        rosterUpdated++;
+      } else if (changed) {
+        setRun(messageId, run);
+      }
     } catch (err) {
       console.error(`/fixrun couldn't resolve plain-text names for run ${run.runId}:`, err.message);
     }
@@ -1565,6 +1585,7 @@ async function handleFixRun(interaction) {
   const parts = [`Checked ${targets.length} run(s) with a private channel.`];
   parts.push(fixed ? `Posted a missing roster copy for ${fixed} of them.` : 'Every roster copy was already there.');
   if (grantedAccess) parts.push(`Granted channel access to ${grantedAccess} member(s) matched from plain-text names.`);
+  if (rosterUpdated) parts.push(`Updated ${rosterUpdated} run roster(s) to @mention a matched member instead.`);
   if (failed) parts.push(`${failed} couldn't be checked — see the console for details.`);
   return interaction.editReply(parts.join(' '));
 }
