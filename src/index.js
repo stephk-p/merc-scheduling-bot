@@ -1476,6 +1476,43 @@ async function handleStartPrompt(interaction) {
   });
 }
 
+// Stop looking up a plain-text name against the member list after this many /fixrun runs with no match.
+const MAX_MANUAL_ACCESS_ATTEMPTS = 3;
+
+/**
+ * For plain-text names picked up from /adoptrun (no @mention), checks whether a real member with a
+ * matching name exists and grants them individual access to the private channel if so — the roster
+ * still shows the plain name until a manager swaps them in with /managerun's Edit roster. Gives up on
+ * an entry (ambiguous name, or nobody matching) after a few attempts instead of searching forever.
+ */
+async function resolveManualAccess(guild, run) {
+  const manualIds = new Set(run.signups.map((s) => s.userId).filter((id) => id.startsWith('manual-')));
+  if (!manualIds.size) return { granted: 0, changed: false };
+
+  const attempts = { ...run.manualAccessAttempts };
+  let granted = 0;
+  let changed = false;
+
+  for (const key of manualIds) {
+    if (attempts[key] === 'granted' || (attempts[key] ?? 0) >= MAX_MANUAL_ACCESS_ATTEMPTS) continue;
+    const label = run.manualLabels?.[key];
+    if (!label) continue;
+
+    const match = await findClearee(guild, label).catch(() => null);
+    changed = true;
+    if (match && !match.user.bot) {
+      await addToPrivateChannel(run, match.id);
+      attempts[key] = 'granted';
+      granted++;
+    } else {
+      attempts[key] = (attempts[key] ?? 0) + 1;
+    }
+  }
+
+  if (changed) run.manualAccessAttempts = attempts;
+  return { granted, changed };
+}
+
 /**
  * Scans every run in this server with a private channel (or just one, if `run_id` is given) and
  * recovers a missing roster copy — never the main run post itself, and never with Sign up/Leave/
@@ -1505,6 +1542,7 @@ async function handleFixRun(interaction) {
 
   let fixed = 0;
   let failed = 0;
+  let grantedAccess = 0;
   for (const [messageId, run] of targets) {
     const hadCopy = Boolean(run.rosterCopyId);
     try {
@@ -1514,10 +1552,19 @@ async function handleFixRun(interaction) {
       failed++;
       console.error(`/fixrun couldn't check run ${run.runId}:`, err.message);
     }
+
+    try {
+      const { granted, changed } = await resolveManualAccess(interaction.guild, run);
+      grantedAccess += granted;
+      if (changed) setRun(messageId, run);
+    } catch (err) {
+      console.error(`/fixrun couldn't resolve plain-text names for run ${run.runId}:`, err.message);
+    }
   }
 
   const parts = [`Checked ${targets.length} run(s) with a private channel.`];
   parts.push(fixed ? `Posted a missing roster copy for ${fixed} of them.` : 'Every roster copy was already there.');
+  if (grantedAccess) parts.push(`Granted channel access to ${grantedAccess} member(s) matched from plain-text names.`);
   if (failed) parts.push(`${failed} couldn't be checked — see the console for details.`);
   return interaction.editReply(parts.join(' '));
 }

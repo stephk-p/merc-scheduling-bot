@@ -195,7 +195,11 @@ copy yet gets one without needing any action taken on it first. Admins can also 
 run right away instead of waiting for the next check, or fill in its optional `run_id` to only check one run.
 Either way, it only ever posts the plain roster message in the private channel — never a copy of the
 Sign up/Leave/Manage Signup post, which only ever exists where `/createrun`, `/privaterun` or `/adoptrun`
-posted it.
+posted it. `/fixrun` also checks every plain-text name (picked up from an `/adoptrun` post with no
+`@mention`) against the server's member list, and grants that member individual access to the private
+channel if someone with a matching name now exists — the roster still shows them by name only until a
+manager swaps them in with Edit roster. It gives up re-checking a name after a few `/fixrun` runs with
+no match, rather than searching forever.
 
 ### Adopting a manually posted run
 
