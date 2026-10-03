@@ -973,6 +973,24 @@ async function sendRolePing(run, roleId) {
   });
 }
 
+/**
+ * Pings @here once in the run's private channel when it's marked completed, never anywhere else.
+ * `deleteAt` is the unix-seconds timestamp the channel gets deleted at, shown as a live countdown.
+ */
+async function sendCompletionAnnouncement(run, deleteAt) {
+  try {
+    const channel = await fetchPrivateChannel(run);
+    if (!channel) return;
+    await channel.send({
+      content: '@here Congrats! This run has been completed. This channel will be deleted ' +
+        `<t:${deleteAt}:R>. Please grab any screenshots you'd like, and good luck in future endeavors!`,
+      allowedMentions: { parse: ['everyone'] },
+    });
+  } catch (err) {
+    console.error(`Couldn't post the completion message for run ${run.runId}:`, err.message);
+  }
+}
+
 /** DMs one user a reminder for a run they're signed up for. */
 async function sendDmReminder(run, userId, minutes) {
   const user = await client.users.fetch(userId);
@@ -1870,6 +1888,7 @@ async function closeRun(interaction, messageId, status) {
 
     // The private channel only has the roster copy, which updatePost() already refreshed.
     const deleteAt = run.channelDeleteAt ? Math.floor(run.channelDeleteAt / 1000) : null;
+    if (deleteAt) await sendCompletionAnnouncement(run, deleteAt);
     let reply;
     if (status === 'completed') {
       reply = `Run **${run.runId}** marked as completed and removed from /managerun.` +

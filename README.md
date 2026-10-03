@@ -177,7 +177,7 @@ You can start typing the ID or the run name and pick it from the list. You get t
 
 | Button | What happens |
 |---|---|
-| **Completed** | The post is marked completed and sign-ups close. The run disappears from the `/managerun` list, and the private channel is deleted 3 hours later. |
+| **Completed** | The post is marked completed and sign-ups close. The run disappears from the `/managerun` list, and the private channel is deleted 3 hours later. The bot posts an @here "congrats, grab your screenshots" message in that private channel (and only there) with a live countdown to the deletion. |
 | **Failed** | The post is marked failed and sign-ups close. The channel stays so you can plan a retry. |
 | **Reschedule** | Enter a new time. The post is updated and sign-ups reopen. `/createrun` channels are renamed to the new day. |
 | **Edit roster** | Add someone (pick them, then their roles and jobs like a normal sign-up), change someone's pick, or remove people. Flex moves, the waitlist and the private channel update just like normal sign-ups and leaves. "Add by name" lets you type a name instead of picking a Discord member — it still matches a real member if one exists, otherwise it's just shown as text. |
