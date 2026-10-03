@@ -149,7 +149,11 @@ function runCommand(name, description) {
     .addStringOption((o) =>
       o.setName('timezone')
         .setDescription('Your timezone (only needed once; it gets remembered)')
-        .setAutocomplete(true));
+        .setAutocomplete(true))
+    .addStringOption((o) =>
+      o.setName('notes')
+        .setDescription('Optional note shown on the post (e.g. "no echo", "prog from P4")')
+        .setMaxLength(300));
 }
 
 const commands = [
@@ -534,6 +538,7 @@ function displayHeader(run) {
   let text;
   if (showsRunId(run)) text = `**Merc Run ID: ${run.runId}**${label ? ` (${label})` : ''}\n${run.header}`;
   else text = label ? `**${label}**\n${run.header}` : run.header;
+  if (run.note) text += `\n**Note:** ${run.note}`;
   return run.ping ? `${run.ping}\n${text}` : text;
 }
 
@@ -1165,6 +1170,8 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   const role = interaction.options.getString('role', true);
   const jobInput = interaction.options.getString('job', true);
   const extraInput = interaction.options.getString('extra_clearee')?.trim() ?? '';
+  const noteInput = interaction.options.getString('notes')?.trim();
+  const note = noteInput ? noMassPing(noteInput) : null;
   const extraRole = interaction.options.getString('extra_role');
   const extraJobInput = interaction.options.getString('extra_job') ?? '';
   const tzInput = interaction.options.getString('timezone');
@@ -1248,6 +1255,7 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
     title: `${amount} ${text}`,
     amount,
     text,
+    note,
     startsAt: parsed.ts,
     signups: [
       { userId: cleareeKey, mode: 'firm', roles: [role], jobs },

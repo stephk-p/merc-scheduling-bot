@@ -67,6 +67,8 @@ That roster is the only message the bot posts in the channel. Nobody is @mention
 - The first time you use `/createrun`, fill in the optional **timezone** option (for example
   `America/New_York` or `EST`) so the bot knows what "4 PM" means for you. It remembers it after that.
   You can change it any time with `/settimezone`.
+- **notes** (optional) adds a line right under the header: `**Note:** your text here` — handy for
+  things like "no echo" or "prog from P4". Leave it blank for no note line at all.
 
 `/privaterun` works exactly like `/createrun` (same options), except it can only be used in one
 specific channel (see `PRIVATE_RUN_CHANNEL_ID` in [src/config.js](src/config.js); used anywhere
