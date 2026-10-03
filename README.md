@@ -15,7 +15,7 @@ By using the bot you agree to the [Terms of Service](TERMS_OF_SERVICE.md) and
 ## Creating a run
 
 ```
-/createrun amount merc_run_type clearee role job time [extra_clearee extra_role extra_job]
+/createrun amount merc_run_type clearee role job time [extra_clearees]
 ```
 
 For example, `/createrun amount:5m merc_run_type:M4S clear clearee:Steph role:M1 job:NIN/SAM time:sept 28 @ 4 PM` posts:
@@ -58,12 +58,12 @@ That roster is the only message the bot posts in the channel. Nobody is @mention
 - **role** is the clearee's role. They're added to that slot automatically.
 - **job** is the clearee's job for that role, picked from the list as you type. Add more than one with
   `/`, like `NIN/SAM`. It's **required** (see the job list under [Signing up](#signing-up)).
-- **extra_clearee**, **extra_role** and **extra_job** (optional) add a second clearee to the roster.
-  Fill in both `extra_clearee` and `extra_role`; `extra_job` is required if `extra_role` is MT/OT/M1/M2
-  and optional otherwise. The post then reads like
-  `5m M4S clear for Steph (NIN/SAM) - M1 & Alex (WHM) - H1 @ Sunday, September 28, 2026 4:00 PM`.
-  If the extra clearee matches a server member who can see the channel the run is posted in, they're
-  @mentioned (and pinged) instead of named. Either way, a matching member is added to the private channel.
+- **extra_clearees** (optional) is a number (1-5) of additional clearees to add to the roster. After you
+  submit the command, a form pops up with one line per extra clearee — type each as `Name, Role, Job(s)`,
+  e.g. `Alex, H1, WHM` (job is only required for MT/OT/M1/M2). No two clearees can share a role. The post
+  then reads like `5m M4S clear for Steph (NIN/SAM) - M1 & Alex (WHM) - H1 @ Sunday, September 28, 2026 4:00 PM`.
+  Any extra clearee matching a server member who can see the channel the run is posted in is `@mentioned`
+  (and pinged) instead of named; either way, a matching member is added to the private channel.
 - The first time you use `/createrun`, fill in the optional **timezone** option (for example
   `America/New_York` or `EST`) so the bot knows what "4 PM" means for you. It remembers it after that.
   You can change it any time with `/settimezone`.

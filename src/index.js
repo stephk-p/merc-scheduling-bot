@@ -105,6 +105,9 @@ const COMMAND_BLURBS = {
 // ---------------------------------------------------------------------------
 // Slash command definitions
 // ---------------------------------------------------------------------------
+// Modals support at most 5 text inputs, so that's the most extra clearees a /createrun form can ask for.
+const MAX_EXTRA_CLEAREES = 5;
+
 function runCommand(name, description) {
   return new SlashCommandBuilder()
     .setName(name)
@@ -132,20 +135,11 @@ function runCommand(name, description) {
         .setAutocomplete(true))
     .addStringOption((o) =>
       o.setName('time').setDescription('When, in your timezone (e.g. "sept 28 @ 4 PM")').setRequired(true).setMaxLength(100))
-    .addStringOption((o) =>
-      o.setName('extra_clearee')
-        .setDescription('A second clearee (optional): pick someone from the list, or type any name')
-        .setMaxLength(100)
-        .setAutocomplete(true))
-    .addStringOption((o) =>
-      o.setName('extra_role')
-        .setDescription("Extra clearee's role slot")
-        .addChoices(...ROLES.map((r) => ({ name: r, value: r }))))
-    .addStringOption((o) =>
-      o.setName('extra_job')
-        .setDescription("Extra clearee's job(s). Required if their role is MT/OT/M1/M2")
-        .setMaxLength(100)
-        .setAutocomplete(true))
+    .addIntegerOption((o) =>
+      o.setName('extra_clearees')
+        .setDescription("Extra clearees? Fill in each one's name/role/job in a form after you submit")
+        .setMinValue(1)
+        .setMaxValue(MAX_EXTRA_CLEAREES))
     .addStringOption((o) =>
       o.setName('timezone')
         .setDescription('Your timezone (only needed once; it gets remembered)')
@@ -557,8 +551,8 @@ function labelsFor(run) {
   const labels = { ...run.manualLabels };
   const key = run.cleareeKey ?? run.cleareeId;
   if (key && run.cleareeName && !run.cleareePinged) labels[key] = run.cleareeName;
-  if (run.extraCleareeKey && run.extraCleareeName && !run.extraCleareePinged) {
-    labels[run.extraCleareeKey] = run.extraCleareeName;
+  for (const extra of run.extraClearees ?? []) {
+    if (extra.key && extra.name && !extra.pinged) labels[extra.key] = extra.name;
   }
   return labels;
 }
@@ -616,8 +610,9 @@ async function syncActiveRosterRole(guildId, guild, userIds) {
 
 /** Everyone who should be able to see a run's private channel (real Discord users only). */
 function channelMembers(run) {
-  return [...new Set([run.creatorId, run.cleareeId, run.extraCleareeId, ...run.signups.map((s) => s.userId)]
-    .filter(isUserId))];
+  return [...new Set([
+    run.creatorId, run.cleareeId, ...(run.extraClearees ?? []).map((e) => e.id), ...run.signups.map((s) => s.userId),
+  ].filter(isUserId))];
 }
 
 // ---------------------------------------------------------------------------
@@ -824,7 +819,7 @@ async function addToPrivateChannel(run, userId) {
 /** Remove a user from the run's private channel. The creator and clearee always keep access. No message is posted. */
 async function removeFromPrivateChannel(run, userId) {
   if (run.privateChannelId === run.channelId) return;
-  if ([run.creatorId, run.cleareeId, run.extraCleareeId].includes(userId)) return;
+  if ([run.creatorId, run.cleareeId, ...(run.extraClearees ?? []).map((e) => e.id)].includes(userId)) return;
   try {
     const channel = await fetchPrivateChannel(run);
     if (!channel) return;
@@ -1180,6 +1175,38 @@ async function resolveClearee(guild, input, fallbackKey) {
 
 const cleareeLabel = (name, jobs, role) => `${name} ` + (jobs.length ? `(${jobs.join('/')}) - ${role}` : role);
 
+// Pending /createrun submissions waiting on the "extra clearees" modal, keyed by a token embedded in
+// the modal's customId (modals can't carry the original options directly). Cleared once submitted, or
+// after a few minutes if the form is never filled in.
+const pendingCreateRuns = new Map();
+const PENDING_CREATE_RUN_TTL_MS = 10 * 60 * 1000;
+
+function stashCreateRunContext(ctx) {
+  const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  pendingCreateRuns.set(token, ctx);
+  setTimeout(() => pendingCreateRuns.delete(token), PENDING_CREATE_RUN_TTL_MS).unref?.();
+  return token;
+}
+
+/** One text input per extra clearee: "Name, Role, Job(s)" in a single line, since modals are plain text only. */
+function extraCleareesModal(token, count) {
+  const modal = new ModalBuilder().setCustomId(`createrun:extra-submit:${token}`).setTitle('Extra clearees');
+  for (let i = 1; i <= count; i++) {
+    modal.addComponents(
+      new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId(`extra${i}`)
+          .setLabel(`Extra clearee ${i}: name, role, job(s)`)
+          .setPlaceholder('e.g. Alex, H1, WHM')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(true)
+          .setMaxLength(100),
+      ),
+    );
+  }
+  return modal;
+}
+
 async function handleCreateRun(interaction, { test = false, noPing = false, requiredChannelId = null } = {}) {
   const amount = noMassPing(interaction.options.getString('amount', true));
   const text = noMassPing(interaction.options.getString('merc_run_type', true));
@@ -1187,12 +1214,10 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   const cleareeInput = interaction.options.getString('clearee', true);
   const role = interaction.options.getString('role', true);
   const jobInput = interaction.options.getString('job', true);
-  const extraInput = interaction.options.getString('extra_clearee')?.trim() ?? '';
   const noteInput = interaction.options.getString('notes')?.trim();
   const note = noteInput ? noMassPing(noteInput) : null;
-  const extraRole = interaction.options.getString('extra_role');
-  const extraJobInput = interaction.options.getString('extra_job') ?? '';
   const tzInput = interaction.options.getString('timezone');
+  const extraCount = interaction.options.getInteger('extra_clearees') ?? 0;
 
   if (!interaction.inGuild()) {
     return interaction.reply(ephemeral('This command only works in a server.'));
@@ -1204,20 +1229,6 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   const main = checkJobInput(role, jobInput, 'job', true);
   if (main.error) return interaction.reply(ephemeral(main.error));
   const { jobs } = main;
-
-  const hasExtra = Boolean(extraInput || extraRole || extraJobInput.trim());
-  let extraJobs = [];
-  if (hasExtra) {
-    if (!extraInput || !extraRole) {
-      return interaction.reply(ephemeral('To add an extra clearee, fill in both **extra_clearee** and **extra_role**.'));
-    }
-    if (extraRole === role) {
-      return interaction.reply(ephemeral(`Both clearees can't have the **${role}** slot. Pick a different **extra_role**.`));
-    }
-    const extra = checkJobInput(extraRole, extraJobInput, 'extra_job', missingJobs([extraRole], []).length > 0);
-    if (extra.error) return interaction.reply(ephemeral(extra.error));
-    extraJobs = extra.jobs;
-  }
 
   const me = interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
   if (!me.permissions.has([PermissionFlagsBits.ManageChannels, PermissionFlagsBits.ManageRoles])) {
@@ -1237,34 +1248,96 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   const parsed = parseTime(timeInput, zone);
   if (parsed.error) return interaction.reply(ephemeral(parsed.error));
 
+  const ctx = { amount, text, cleareeInput, role, jobs, note, parsed, test, noPing, requiredChannelId };
+
+  // A modal must be the interaction's first response, so this can't be deferred first — the heavier
+  // work (resolving clearees, creating the channel, posting) happens once the form comes back.
+  if (extraCount > 0) {
+    const token = stashCreateRunContext(ctx);
+    return interaction.showModal(extraCleareesModal(token, extraCount));
+  }
+
   // Reply privately to the creator. The run itself is sent as a normal message so the ping
   // notifies people (mentions added by editing a message don't).
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  return finishCreateRun(interaction, ctx, []);
+}
+
+async function handleCreateRunExtraSubmit(interaction, token) {
+  const ctx = pendingCreateRuns.get(token);
+  pendingCreateRuns.delete(token);
+  if (!ctx) return interaction.reply(ephemeral('That took too long — run `/createrun` again.'));
+
+  const extras = [];
+  const usedRoles = new Set([ctx.role]);
+  let i = 0;
+  for (const field of interaction.fields.fields.values()) {
+    i++;
+    const [nameRaw, roleRaw, jobRaw = ''] = field.value.split(',').map((s) => s.trim());
+    if (!nameRaw || !roleRaw) {
+      return interaction.reply(ephemeral(`Extra clearee ${i} needs at least a name and a role, e.g. "Alex, H1, WHM".`));
+    }
+    const extraRole = roleRaw.toUpperCase();
+    if (!ROLES.includes(extraRole)) {
+      return interaction.reply(ephemeral(`"${roleRaw}" isn't a role for extra clearee ${i}. Pick from ${ROLES.join('/')}.`));
+    }
+    if (usedRoles.has(extraRole)) {
+      return interaction.reply(ephemeral(`Two clearees can't both have the **${extraRole}** slot.`));
+    }
+    usedRoles.add(extraRole);
+    const check = checkJobInput(extraRole, jobRaw, `extra clearee ${i} job`, missingJobs([extraRole], []).length > 0);
+    if (check.error) return interaction.reply(ephemeral(check.error));
+    extras.push({ name: noMassPing(nameRaw), role: extraRole, jobs: check.jobs });
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  return finishCreateRun(interaction, ctx, extras);
+}
+
+/**
+ * Resolves clearees, creates the private channel and posts the run. `extras` is already-validated
+ * `{ name, role, jobs }` entries beyond the main clearee (from the form, or none at all).
+ */
+async function finishCreateRun(interaction, ctx, extras) {
+  const { amount, text, cleareeInput, role, jobs, note, parsed, test, noPing, requiredChannelId } = ctx;
+  void requiredChannelId; // already checked in handleCreateRun before this runs
+
+  const me = interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
+  const postChannel = interaction.channel ?? (await client.channels.fetch(interaction.channelId).catch(() => null));
 
   // Clearees don't have to be server members. If the text matches one, they get the slot
   // and are added to the private channel; otherwise the text is just shown as their name.
   const runId = newRunId();
   const clearee = await resolveClearee(interaction.guild, cleareeInput, `clearee-${runId}`);
-  const extra = hasExtra ? await resolveClearee(interaction.guild, extraInput, `clearee2-${runId}`) : null;
-  if (extra?.member && extra.member.id === clearee.member?.id) {
-    return interaction.editReply('The extra clearee is the same person as the clearee. Pick someone else.');
+  const resolvedExtras = [];
+  for (const [i, extra] of extras.entries()) {
+    const resolved = await resolveClearee(interaction.guild, extra.name, `clearee${i + 2}-${runId}`);
+    resolvedExtras.push({ ...extra, ...resolved });
   }
+
+  // Nobody can be the clearee for two different slots.
+  const memberIds = [clearee, ...resolvedExtras].map((c) => c.member?.id).filter(Boolean);
+  if (new Set(memberIds).size !== memberIds.length) {
+    return interaction.editReply("The same person can't be the clearee for two different slots. Pick someone else.");
+  }
+
   const cleareeMember = clearee.member;
   const cleareeName = clearee.name;
   const cleareeKey = clearee.key;
 
-  // The extra clearee is @mentioned (and pinged) if they're a member who can see this channel.
-  const postChannel = interaction.channel ?? (await client.channels.fetch(interaction.channelId).catch(() => null));
-  const pingExtra = Boolean(extra?.member &&
-    postChannel?.permissionsFor(extra.member)?.has(PermissionFlagsBits.ViewChannel));
-  const extraShown = pingExtra ? `<@${extra.member.id}>` : extra?.name;
-
-  // The main clearee is @mentioned (and pinged) the same way, if they're a member who can see this channel.
+  // Each clearee is @mentioned (and pinged) if they're a member who can see this channel.
   const pingMain = Boolean(cleareeMember &&
     postChannel?.permissionsFor(cleareeMember)?.has(PermissionFlagsBits.ViewChannel));
   const cleareeShown = pingMain ? `<@${cleareeMember.id}>` : cleareeName;
 
-  const who = cleareeLabel(cleareeShown, jobs, role) + (extra ? ` & ${cleareeLabel(extraShown, extraJobs, extraRole)}` : '');
+  const extraInfo = resolvedExtras.map((extra) => {
+    const pinged = Boolean(extra.member && postChannel?.permissionsFor(extra.member)?.has(PermissionFlagsBits.ViewChannel));
+    const shown = pinged ? `<@${extra.member.id}>` : extra.name;
+    return { ...extra, pinged, shown };
+  });
+
+  const who = [cleareeLabel(cleareeShown, jobs, role), ...extraInfo.map((e) => cleareeLabel(e.shown, e.jobs, e.role))]
+    .join(' & ');
   const header = `${amount} ${text} for ${who} @ <t:${parsed.ts}:f>`;
   const ping = noPing ? { text: null, allowedMentions: { parse: [] }, roleId: null } : pingFor(interaction.guildId);
   const run = {
@@ -1277,7 +1350,7 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
     startsAt: parsed.ts,
     signups: [
       { userId: cleareeKey, mode: 'firm', roles: [role], jobs },
-      ...(extra ? [{ userId: extra.key, mode: 'firm', roles: [extraRole], jobs: extraJobs }] : []),
+      ...extraInfo.map((e) => ({ userId: e.key, mode: 'firm', roles: [e.role], jobs: e.jobs })),
     ],
     placed: {},
     status: 'open',
@@ -1292,10 +1365,7 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
     cleareeKey,
     cleareeName,
     cleareePinged: pingMain,
-    extraCleareeId: extra?.member?.id ?? null,
-    extraCleareeKey: extra?.key ?? null,
-    extraCleareeName: extra?.name ?? null,
-    extraCleareePinged: pingExtra,
+    extraClearees: extraInfo.map((e) => ({ id: e.member?.id ?? null, key: e.key, name: e.name, pinged: e.pinged })),
   };
 
   // /createrun-test: merc-run-<id>. /createrun: amount, text, clearee and day, e.g. 5m-m4s-clear-stephk-sep-28.
@@ -1314,7 +1384,10 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   let post;
   try {
     const channel = postChannel ?? (await client.channels.fetch(interaction.channelId));
-    const pingedUsers = [...(pingMain ? [cleareeMember.id] : []), ...(pingExtra ? [extra.member.id] : [])];
+    const pingedUsers = [
+      ...(pingMain ? [cleareeMember.id] : []),
+      ...extraInfo.filter((e) => e.pinged).map((e) => e.member.id),
+    ];
     post = await channel.send({
       content: rendered.content,
       components: [runButtons()],
@@ -1356,10 +1429,12 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   } else if (!pingMain) {
     done += `\n${cleareeName} can't see this channel, so they're shown by name instead of pinged. They were still added to the private channel.`;
   }
-  if (extra && !extra.member) {
-    done += `\nNo server member matched "${extra.name}", so the extra clearee is shown by name only and wasn't added to the channel.`;
-  } else if (extra && !pingExtra) {
-    done += `\n${extra.name} can't see this channel, so they're shown by name instead of pinged. They were still added to the private channel.`;
+  for (const e of extraInfo) {
+    if (!e.member) {
+      done += `\nNo server member matched "${e.name}", so that extra clearee is shown by name only and wasn't added to the channel.`;
+    } else if (!e.pinged) {
+      done += `\n${e.name} can't see this channel, so they're shown by name instead of pinged. They were still added to the private channel.`;
+    }
   }
   await interaction.editReply({ content: done, allowedMentions: { parse: [] } });
 }
@@ -1727,10 +1802,7 @@ async function handleAdoptRun(interaction) {
     cleareeId: null,
     cleareeKey: null,
     cleareeName: null,
-    extraCleareeId: null,
-    extraCleareeKey: null,
-    extraCleareeName: null,
-    extraCleareePinged: false,
+    extraClearees: [],
   };
 
   // The bot can only ever edit messages it posted itself, so it reposts a copy to manage from
@@ -2700,13 +2772,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isAutocomplete()) {
       const focused = interaction.options.getFocused(true);
       if (focused.name === 'run_id') return await interaction.respond(autocompleteRuns(interaction, focused.value));
-      if (focused.name === 'clearee' || focused.name === 'extra_clearee') {
+      if (focused.name === 'clearee') {
         return await interaction.respond(await autocompleteClearee(interaction, focused.value));
       }
       if (focused.name === 'job') return await interaction.respond(autocompleteJobs(interaction, focused.value, 'role'));
-      if (focused.name === 'extra_job') {
-        return await interaction.respond(autocompleteJobs(interaction, focused.value, 'extra_role'));
-      }
       return await interaction.respond(autocompleteZones(focused.value));
     }
 
@@ -2793,6 +2862,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'manage' && action === 'reschedule-submit') return await handleRescheduleSubmit(interaction, messageId);
       if (ns === 'manage' && action === 'details-submit') return await handleDetailsSubmit(interaction, messageId);
       if (ns === 'edit' && action === 'addname-submit') return await handleAddByNameSubmit(interaction, messageId);
+      if (ns === 'createrun' && action === 'extra-submit') return await handleCreateRunExtraSubmit(interaction, messageId);
     }
   } catch (err) {
     console.error(err);
