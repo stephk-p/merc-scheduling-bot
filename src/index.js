@@ -2010,6 +2010,20 @@ async function updatePost(messageId, run) {
   return fresh.id;
 }
 
+/** Deletes the run post itself (used once a run is completed and its roster copy is the record kept). */
+async function deleteRunPost(run, postId) {
+  try {
+    const channel = await client.channels.fetch(run.channelId).catch(() => null);
+    const post = channel && (await channel.messages.fetch(postId).catch(() => null));
+    if (!post) return false;
+    await post.delete();
+    return true;
+  } catch (err) {
+    console.error(`Couldn't delete the run post for run ${run.runId}:`, err.message);
+    return false;
+  }
+}
+
 async function closeRun(interaction, messageId, status) {
   await interaction.deferUpdate();
   return withLock(messageId, async () => {
@@ -2030,10 +2044,20 @@ async function closeRun(interaction, messageId, status) {
     // The private channel only has the roster copy, which updatePost() already refreshed.
     const deleteAt = run.channelDeleteAt ? Math.floor(run.channelDeleteAt / 1000) : null;
     if (deleteAt) await sendCompletionAnnouncement(run, deleteAt);
+
+    // The original Sign up/Leave/Manage Signup post isn't needed anymore once completed — the
+    // private channel's roster copy (just refreshed above) is the lasting record from here on.
+    // Skipped for buttonless runs, where that post *is* the private channel's only roster message.
+    let postDeleted = false;
+    if (status === 'completed' && postId && run.privateChannelId && run.privateChannelId !== run.channelId) {
+      postDeleted = await deleteRunPost(run, postId);
+    }
+
     let reply;
     if (status === 'completed') {
       reply = `Run **${run.runId}** marked as completed and removed from /managerun.` +
-        (deleteAt ? ` Its private channel will be deleted <t:${deleteAt}:R>.` : '');
+        (deleteAt ? ` Its private channel will be deleted <t:${deleteAt}:R>.` : '') +
+        (postDeleted ? ' The original post has been deleted.' : '');
     } else {
       reply = `Run **${run.runId}** marked as failed. Sign-ups are closed until it's rescheduled.`;
     }
