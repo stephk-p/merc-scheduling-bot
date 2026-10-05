@@ -991,7 +991,7 @@ async function sendRolePing(run, roleId) {
 
   await channel.send({
     content: `${mention} Run is starting <t:${run.startsAt}:R>! PF will be up shortly.\n` +
-      'Default **PF Password** should be *8008*.',
+      'Default **PF Password** should be __***8008***__.',
     allowedMentions,
   });
 }
