@@ -177,7 +177,7 @@ You can start typing the ID or the run name and pick it from the list. You get t
 
 | Button | What happens |
 |---|---|
-| **Completed** | The post is marked completed and sign-ups close. The run disappears from the `/managerun` list, the original post is deleted (the private channel's roster copy is kept as the record), and the private channel is deleted 3 hours later. The bot posts an @here "congrats, grab your screenshots" message in that private channel (and only there) with a live countdown to the deletion. |
+| **Completed** | The post is marked completed and sign-ups close. The run disappears from the `/managerun` list, the original post is deleted (the private channel's roster copy is kept as the record — this isn't mentioned anywhere, only logged if a log channel is set), and the private channel is deleted 3 hours later. The bot posts an @here "congrats, grab your screenshots" message in that private channel (and only there) with a live countdown to the deletion. |
 | **Failed** | The post is marked failed and sign-ups close. The channel stays so you can plan a retry. |
 | **Reschedule** | Enter a new time. The post is updated and sign-ups reopen. `/createrun` channels are renamed to the new day. |
 | **Edit roster** | Add someone (pick them, then their roles and jobs like a normal sign-up), change someone's pick, or remove people. Flex moves, the waitlist and the private channel update just like normal sign-ups and leaves. "Add by name" lets you type a name instead of picking a Discord member — it still matches a real member if one exists, otherwise it's just shown as text. |
@@ -279,10 +279,11 @@ not just when they first sign up.
 ### Logging roster activity
 
 Admins can use `/setlogchannel channel:#the-channel` to have the bot post a short log entry whenever
-someone signs up, leaves, or changes their pick, and whenever a manager adds, edits or removes someone
-through `/managerun`'s Edit roster — one line per action (e.g. "✅ @user signed up for 482915 · 5m M4S
-clear as H2."). Nobody is pinged by these messages. Run `/setlogchannel` again with no `channel` to turn
-logging off; if no log channel is set, nothing is posted at all.
+someone signs up, leaves, or changes their pick, whenever a manager adds, edits or removes someone
+through `/managerun`'s Edit roster, and whenever a run is marked completed or failed — one line per
+action (e.g. "✅ @user signed up for 482915 · 5m M4S clear as H2."). Nobody is pinged by these messages.
+Run `/setlogchannel` again with no `channel` to turn logging off; if no log channel is set, nothing is
+posted at all.
 
 ## Role restrictions
 
