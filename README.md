@@ -385,6 +385,12 @@ and it checks GitHub when it starts and then every day at **3:00 AM New York tim
 This needs `git` and a folder that was set up with `git clone`. Your `.env` and `data/` are never touched.
 If the update fails (for example because of local edits), it logs why and keeps the current version.
 
+The bot's owner (a single hardcoded Discord user ID, `BOT_OWNER_ID` in [src/config.js](src/config.js)) can
+also use `/botupdate` to trigger that same check right away instead of waiting for the daily one — nobody
+else can use it, regardless of server or admin permissions, since it restarts the bot for every server at
+once. Only works when started with `npm start` (through `src/launcher.js`); running `src/index.js` directly
+has no auto-updater to ask.
+
 ### Hosting on Cybrancee
 
 Cybrancee runs bots through a Pterodactyl panel. Setting names can differ slightly.

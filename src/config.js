@@ -4,6 +4,9 @@ export const MERCS_ROLE_ID = '1529562550348288040'; // UMAD: "mercs"
 export const OVERSEER_ROLE_ID = '1551648248593256498'; // UMAD: "overseer"
 export const CLIENT_ROLE_ID = '1529564460660818112'; // UMAD: "client" — never gets the active roster role on its own
 
+// The only Discord user who can use /botupdate, regardless of server or admin permissions.
+export const BOT_OWNER_ID = '103037694984073216';
+
 // Per-server rules. Servers that aren't listed here get the defaults noted below.
 //
 //   commandRoles - only members with at least one of these roles can use

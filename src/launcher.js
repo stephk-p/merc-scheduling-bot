@@ -2,7 +2,7 @@
 // UPDATE_CHECK_TIME in UPDATE_CHECK_TIMEZONE (default 03:00 America/New_York). If there are any, it
 // pulls them, reinstalls packages if they changed, and restarts the bot. Otherwise nothing happens.
 import 'dotenv/config';
-import { exec, execFile, spawn } from 'node:child_process';
+import { exec, execFile, fork } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -27,7 +27,14 @@ let restarting = false;
 let shuttingDown = false;
 
 function startBot() {
-  bot = spawn(process.execPath, [BOT_FILE], { cwd: ROOT, stdio: 'inherit' });
+  // fork() (rather than spawn()) gives the bot process an IPC channel back to this launcher, so
+  // /botupdate can ask for an on-demand update check without waiting for the daily schedule.
+  bot = fork(BOT_FILE, { cwd: ROOT, stdio: 'inherit' });
+  bot.on('message', (msg) => {
+    if (msg?.type !== 'check-update') return;
+    log(`Manual update check requested${msg.by ? ` by ${msg.by}` : ''}.`);
+    checkAndRestart();
+  });
   bot.on('exit', (code, signal) => {
     bot = null;
     if (restarting) return;

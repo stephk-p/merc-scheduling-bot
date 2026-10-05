@@ -21,6 +21,7 @@ import {
 import { DateTime } from 'luxon';
 import {
   ACTIVE_ROSTER_ROLE,
+  BOT_OWNER_ID,
   DEFAULT_RUN_START_PING,
   PRIVATE_RUN_CHANNEL_ID,
   RESTRICTED_COMMANDS,
@@ -256,6 +257,10 @@ const commands = [
       o.setName('channel')
         .setDescription('Log channel (leave blank to turn logging off)')
         .addChannelTypes(ChannelType.GuildText)),
+  new SlashCommandBuilder()
+    .setName('botupdate')
+    .setDescription("Check GitHub for an update right now, instead of waiting for the daily check")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 ].map((c) => c.toJSON());
 
 // ---------------------------------------------------------------------------
@@ -1610,6 +1615,29 @@ async function handleSetLogChannel(interaction) {
     : 'Logging turned off for this server.'));
 }
 
+/**
+ * Asks src/launcher.js (the parent process) to check GitHub for an update right now, instead of
+ * waiting for its daily check — same update-and-restart logic, just on demand. Locked to
+ * BOT_OWNER_ID regardless of server or admin permissions, since it restarts the whole bot for
+ * every server at once. Only works when started via `npm start` (src/launcher.js); running
+ * src/index.js directly (`npm run start:bot`) has no parent process to ask.
+ */
+async function handleBotUpdate(interaction) {
+  if (interaction.user.id !== BOT_OWNER_ID) {
+    return interaction.reply(ephemeral("Only this bot's owner can use `/botupdate`."));
+  }
+  if (typeof process.send !== 'function') {
+    return interaction.reply(ephemeral(
+      "I'm not running under the auto-updater (`src/launcher.js`), so there's no update check to trigger here.",
+    ));
+  }
+
+  process.send({ type: 'check-update', by: interaction.user.tag });
+  return interaction.reply(ephemeral(
+    '🔄 Checking GitHub for updates now. If there\'s a new version, I\'ll restart in a few seconds — otherwise nothing changes.',
+  ));
+}
+
 // Stop looking up a plain-text name against the member list after this many /fixrun runs with no match.
 const MAX_MANUAL_ACCESS_ATTEMPTS = 3;
 
@@ -2852,6 +2880,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'startprompt': return await handleStartPrompt(interaction);
         case 'fixrun': return await handleFixRun(interaction);
         case 'setlogchannel': return await handleSetLogChannel(interaction);
+        case 'botupdate': return await handleBotUpdate(interaction);
         default: return;
       }
     }
