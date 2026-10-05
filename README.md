@@ -241,7 +241,8 @@ If you added the bot before, give its role those permissions in Server Settings.
 Server Settings → Roles, or it won't be able to add/remove it.
 
 On servers set up for it (see `RUN_START_PING` in [src/config.js](src/config.js)), the bot pings
-30 minutes before a run starts, e.g. "Run is starting in 30 minutes! PF will be up shortly." If
+30 minutes before a run starts, e.g. "Run is starting in 30 minutes! PF will be up shortly." (with a
+reminder underneath that the default PF Password is 8008). If
 `ACTIVE_ROSTER_ROLE` is also set up (below), it @mentions that run's actual active roster directly
 instead of the role, so someone only waitlisted there (even if they're active in a different run)
 never gets pinged by mistake. Otherwise it pings the configured role, or `@here` if there isn't one.
