@@ -69,6 +69,7 @@ import {
   revokeUser,
 } from './permissions.js';
 import { getStartPromptSettings, setStartPromptEnabled, setStartPromptRole } from './startPrompt.js';
+import { getLogChannel, setLogChannel } from './logChannels.js';
 
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
 if (!DISCORD_TOKEN) {
@@ -99,6 +100,7 @@ const COMMAND_BLURBS = {
   permissions: 'Grant or revoke who can use restricted commands (admins only)',
   startprompt: "Configure the run-starting DM, including an optional role to ping (admins only)",
   fixrun: "Repost a missing roster copy in any run's private channel (admins only)",
+  setlogchannel: 'Set or clear the channel roster activity gets logged to (admins only)',
   help: 'Show this help message',
 };
 
@@ -246,6 +248,14 @@ const commands = [
         .setMinLength(6)
         .setMaxLength(6)
         .setAutocomplete(true)),
+  new SlashCommandBuilder()
+    .setName('setlogchannel')
+    .setDescription('Set (or clear) the channel roster activity gets logged to')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addChannelOption((o) =>
+      o.setName('channel')
+        .setDescription('Log channel (leave blank to turn logging off)')
+        .addChannelTypes(ChannelType.GuildText)),
 ].map((c) => c.toJSON());
 
 // ---------------------------------------------------------------------------
@@ -566,6 +576,23 @@ const isUserId = (id) => /^\d{15,21}$/.test(id ?? '');
 function isActiveRosterMember(run, userId) {
   const { result } = render(run);
   return ROLES.some((r) => result.slots[r]?.userId === userId);
+}
+
+/**
+ * Posts a single-line entry to this server's log channel (if one is set via /setlogchannel) for
+ * roster activity — signing up, leaving, or changing a pick. Never throws, and does nothing at all
+ * if no log channel is configured, so it never adds noise for servers that don't want it.
+ */
+async function logActivity(guildId, text) {
+  const channelId = getLogChannel(guildId);
+  if (!channelId) return;
+  try {
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (!channel) return;
+    await channel.send({ content: text, allowedMentions: { parse: [] } });
+  } catch (err) {
+    console.error(`Couldn't post to the log channel for guild ${guildId}:`, err.message);
+  }
 }
 
 /**
@@ -1471,7 +1498,7 @@ async function handleHelp(interaction) {
         return hasCommandAccess(interaction, c);
       });
     if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      available.push('permissions', 'startprompt', 'fixrun');
+      available.push('permissions', 'startprompt', 'fixrun', 'setlogchannel');
     }
     for (const c of available) lines.push(`• \`/${c}\` \u2014 ${COMMAND_BLURBS[c] ?? ''}`);
   } else {
@@ -1567,6 +1594,19 @@ async function handleStartPrompt(interaction) {
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });
+}
+
+async function handleSetLogChannel(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply(ephemeral('Only server administrators can use `/setlogchannel`.'));
+  }
+
+  const channel = interaction.options.getChannel('channel');
+  setLogChannel(interaction.guildId, channel?.id ?? null);
+  return interaction.reply(ephemeral(channel
+    ? `✅ Roster activity (sign-ups, leaves, picks changing) will now be logged in <#${channel.id}>.`
+    : 'Logging turned off for this server.'));
 }
 
 // Stop looking up a plain-text name against the member list after this many /fixrun runs with no match.
@@ -2419,6 +2459,9 @@ async function handleConfirm(interaction, messageId, encodedValues, encodedJobs)
     });
     await syncRosterCopy(messageId, updated, rendered.content);
     if (isNew) await addToPrivateChannel(updated, userId);
+    await logActivity(updated.guildId, isNew
+      ? `✅ <@${userId}> signed up for **${updated.runId} · ${updated.title}** as **${describeSignup(signup)}**.`
+      : `✏️ <@${userId}> changed their pick for **${updated.runId} · ${updated.title}** to **${describeSignup(signup)}**.`);
   });
 }
 
@@ -2440,6 +2483,8 @@ async function handleLeave(interaction) {
     await interaction.followUp(ephemeral(`Removed you from the run (you were **${describeSignup(mine)}**).`));
     await syncRosterCopy(post.id, updated, rendered.content);
     await removeFromPrivateChannel(updated, interaction.user.id);
+    await logActivity(updated.guildId,
+      `❌ <@${interaction.user.id}> left **${updated.runId} · ${updated.title}** (was **${describeSignup(mine)}**).`);
   });
 }
 
@@ -2592,6 +2637,8 @@ async function handleEditConfirm(interaction, messageId, userId, encodedValues, 
     await syncActiveRosterRole(run.guildId, interaction.guild, signups.map((s) => s.userId));
     if (isNew && isUserId(userId)) await addToPrivateChannel(run, userId);
     const who = labelsFor(run)[userId] ?? `<@${userId}>`;
+    await logActivity(run.guildId, `${isNew ? '✅' : '✏️'} ${interaction.user} ${isNew ? 'added' : 'updated'} ` +
+      `${who} on **${run.runId} · ${run.title}** as **${describeSignup(signup)}** via Edit roster.`);
     return interaction.editReply(await editPanel(interaction, finalId, run,
       outcomeText(signup, rendered, false, who)));
   });
@@ -2620,6 +2667,8 @@ async function handleEditRemove(interaction, messageId) {
 
     const labels = labelsFor(run);
     const names = removed.map((s) => labels[s.userId] ?? `<@${s.userId}>`).join(', ');
+    await logActivity(run.guildId,
+      `❌ ${interaction.user} removed ${names} from **${run.runId} · ${run.title}** via Edit roster.`);
     return interaction.editReply(await editPanel(interaction, finalId, run, `✅ Removed ${names}.`));
   });
 }
@@ -2801,6 +2850,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'permissions': return await handlePermissions(interaction);
         case 'startprompt': return await handleStartPrompt(interaction);
         case 'fixrun': return await handleFixRun(interaction);
+        case 'setlogchannel': return await handleSetLogChannel(interaction);
         default: return;
       }
     }

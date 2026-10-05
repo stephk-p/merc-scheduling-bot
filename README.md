@@ -275,6 +275,14 @@ The bot also rechecks every run's private channel once a minute and re-grants ac
 should be able to see it but can't anymore (for example, if their permission was removed by hand) —
 not just when they first sign up.
 
+### Logging roster activity
+
+Admins can use `/setlogchannel channel:#the-channel` to have the bot post a short log entry whenever
+someone signs up, leaves, or changes their pick, and whenever a manager adds, edits or removes someone
+through `/managerun`'s Edit roster — one line per action (e.g. "✅ @user signed up for 482915 · 5m M4S
+clear as H2."). Nobody is pinged by these messages. Run `/setlogchannel` again with no `channel` to turn
+logging off; if no log channel is set, nothing is posted at all.
+
 ## Role restrictions
 
 A server can limit who creates runs and who signs up. These rules are set in [src/config.js](src/config.js):
@@ -312,6 +320,7 @@ them admins. `/permissions list` shows every extra grant in the server.
 | `/permissions` | Admins only: grant or revoke a role/member's access to restricted commands |
 | `/startprompt` | Admins only: turn the run-starting DM on/off, and optionally assign a role to ping |
 | `/fixrun` | Admins only: scan every run (or just one, with `run_id`) and repost a missing roster copy in its private channel |
+| `/setlogchannel` | Admins only: set or clear the channel roster activity gets logged to |
 
 ---
 
