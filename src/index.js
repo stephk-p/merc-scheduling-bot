@@ -2048,15 +2048,16 @@ async function closeRun(interaction, messageId, status) {
     // The original Sign up/Leave/Manage Signup post isn't needed anymore once completed — the
     // private channel's roster copy (just refreshed above) is the lasting record from here on.
     // Skipped for buttonless runs, where that post *is* the private channel's only roster message.
-    // Not mentioned anywhere (ephemeral reply or any channel) — the log channel below is the record.
+    let postDeleted = false;
     if (status === 'completed' && postId && run.privateChannelId && run.privateChannelId !== run.channelId) {
-      await deleteRunPost(run, postId);
+      postDeleted = await deleteRunPost(run, postId);
     }
 
     let reply;
     if (status === 'completed') {
       reply = `Run **${run.runId}** marked as completed and removed from /managerun.` +
-        (deleteAt ? ` Its private channel will be deleted <t:${deleteAt}:R>.` : '');
+        (deleteAt ? ` Its private channel will be deleted <t:${deleteAt}:R>.` : '') +
+        (postDeleted ? ' The original post has been deleted.' : '');
     } else {
       reply = `Run **${run.runId}** marked as failed. Sign-ups are closed until it's rescheduled.`;
     }
