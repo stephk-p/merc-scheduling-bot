@@ -96,6 +96,7 @@ const COMMAND_BLURBS = {
   managerun: 'Mark a run completed or failed, reschedule it, edit its roster, or delete it',
   removeadoptedrun: "Stop tracking a run (keeps its channel, permissions and messages untouched)",
   runs: 'List current runs and their private channels',
+  myruns: "See the runs you're signed up for, what time they start and a link to each",
   setpreference: 'Save your usual roles/jobs and choose DM reminder times',
   settimezone: 'Save or change your timezone',
   permissions: 'Grant or revoke who can use restricted commands (admins only)',
@@ -171,6 +172,9 @@ const commands = [
   new SlashCommandBuilder()
     .setName('runs')
     .setDescription('List current runs and their private channels'),
+  new SlashCommandBuilder()
+    .setName('myruns')
+    .setDescription("See the runs you're signed up for, what time they start and a link to each"),
   new SlashCommandBuilder()
     .setName('adoptrun')
     .setDescription('Attach a Merc Run ID to a manually posted run so the bot can manage it')
@@ -1496,10 +1500,10 @@ async function handleHelp(interaction) {
 
   if (interaction.inGuild()) {
     lines.push('', '**Commands you can use here**');
-    const available = ['help', 'setpreference', 'settimezone']
+    const available = ['help', 'myruns', 'setpreference', 'settimezone']
       .concat(RESTRICTED_COMMANDS.filter((c) => c !== 'createrun-test'))
       .filter((c) => {
-        if (c === 'help' || c === 'settimezone') return true;
+        if (c === 'help' || c === 'myruns' || c === 'settimezone') return true;
         if (c === 'setpreference') return hasCommandAccess(interaction, c, 'preferenceRoles');
         return hasCommandAccess(interaction, c);
       });
@@ -1802,6 +1806,29 @@ async function handleListRuns(interaction) {
     const channel = run.privateChannelId ? `<#${run.privateChannelId}>` : '_channel deleted_';
     const when = run.startsAt ? ` — <t:${run.startsAt}:F>` : '';
     return `**${runName(run)}**${when} — ${channel}`;
+  });
+  return interaction.reply({ content: lines.join('\n'), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+}
+
+// What you're signed up for: your pick, when it starts and a link to its private channel.
+// Never shows the Merc Run ID — that's /managerun's business, not something you need day to day.
+async function handleMyRuns(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+
+  const userId = interaction.user.id;
+  const runs = allRuns()
+    .map(([, run]) => run)
+    .filter((run) => run.guildId === interaction.guildId && run.status !== 'completed' &&
+      run.signups.some((s) => s.userId === userId))
+    .sort((a, b) => (a.startsAt ?? 0) - (b.startsAt ?? 0));
+
+  if (!runs.length) return interaction.reply(ephemeral("You're not signed up for any runs right now."));
+
+  const lines = runs.map((run) => {
+    const mine = run.signups.find((s) => s.userId === userId);
+    const channel = run.privateChannelId ? `<#${run.privateChannelId}>` : '_channel deleted_';
+    const when = run.startsAt ? ` — <t:${run.startsAt}:F>` : '';
+    return `**${runName(run)}**${when} — ${describeSignup(mine)} — ${channel}`;
   });
   return interaction.reply({ content: lines.join('\n'), flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
 }
@@ -2900,6 +2927,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'managerun': return await handleManageRun(interaction);
         case 'removeadoptedrun': return await handleRemoveAdoptedRun(interaction);
         case 'runs': return await handleListRuns(interaction);
+        case 'myruns': return await handleMyRuns(interaction);
         case 'settimezone': return await handleSetTimezone(interaction);
         case 'setpreference': return await handleSetPreference(interaction);
         case 'help': return await handleHelp(interaction);

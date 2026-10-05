@@ -115,6 +115,9 @@ menus as Sign up. After that, pressing **Sign up** on a run you haven't joined o
 filled in and shows where you'd land, so you just press **Confirm**, or change it first.
 Run `/setpreference` again to change it, or press **Clear preference** to remove it.
 
+Use `/myruns` any time to see every run you're currently signed up for — your pick, when it starts and
+a link to its private channel — without the Merc Run ID, since that's only needed for `/managerun`.
+
 `/setpreference` also sends a second message where you can pick one or more times (5 to 60 minutes
 before a run starts) to get a DM reminder. It only reminds you about runs you're signed up for, and
 saves as soon as you pick, so there's nothing else to confirm. Clear the selection to turn it off.
@@ -316,6 +319,7 @@ them admins. `/permissions list` shows every extra grant in the server.
 | `/removeadoptedrun` | Stop tracking a run without touching its post, channel, messages or permissions |
 | `/managerun` | Mark a run completed or failed, reschedule it, edit its roster, or delete it |
 | `/runs` | List current runs by name, clearee, date and a link to each private channel (no post content) |
+| `/myruns` | See the runs you're signed up for, your pick, when they start and a link to each |
 | `/settimezone` | Save or change your timezone |
 | `/setpreference` | Save your usual roles and jobs so Sign up is filled in for you, and choose when you get DM reminders |
 | `/help` | How to sign up for runs and which commands you can use in this server |
