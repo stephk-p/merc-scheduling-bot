@@ -1997,6 +1997,47 @@ async function handleRemoveAdoptedRunButton(interaction, action, messageId) {
 // /managerun actions
 // ---------------------------------------------------------------------------
 
+function pingAllowedMentions(ping) {
+  if (!ping) return { parse: [] };
+  const roleId = ping.match(/<@&(\d+)>/)?.[1];
+  return roleId ? { roles: [roleId] } : { parse: ['everyone'] };
+}
+
+/**
+ * Reposts a rescheduled run in the original channel to re-ping everyone and keep the sign-up roster
+ * visible even when newer run posts have buried the old one. The roster itself is unchanged; only the
+ * message is re-sent in the same channel and the saved run is moved to the new post ID.
+ */
+async function repostRescheduledRun(messageId, run) {
+  if (!run.channelId || run.buttonless) return messageId;
+  const channel = await client.channels.fetch(run.channelId).catch(() => null);
+  if (!channel) return null;
+
+  const rendered = render(run);
+  run.placed = rendered.placed;
+  const content = rendered.content;
+  const components = [runButtons(isClosed(run))];
+  const oldPost = await channel.messages.fetch(messageId).catch(() => null);
+  const fresh = await channel.send({
+    content,
+    components,
+    allowedMentions: pingAllowedMentions(run.ping),
+  }).catch((err) => {
+    console.error(`Couldn't repost the rescheduled run ${run.runId}:`, err.message);
+    return null;
+  });
+
+  if (!fresh) return null;
+  if (oldPost && oldPost.id !== fresh.id) {
+    await oldPost.delete().catch(() => {});
+  }
+
+  deleteRun(messageId);
+  setRun(fresh.id, run);
+  await syncRosterCopy(fresh.id, run, content);
+  return fresh.id;
+}
+
 /**
  * Re-renders the run post. If it's gone (deleted by hand, or from an old /adoptrun before the bot
  * could only edit its own messages), reposts a fresh copy in the same channel and moves the run
@@ -2185,14 +2226,15 @@ async function handleRescheduleSubmit(interaction, messageId) {
     run.dmRemindersSent = {};
     run.startPromptSent = false;
     const postId = await updatePost(messageId, run);
-    setRun(postId ?? messageId, run);
+    const repostId = await repostRescheduledRun(postId ?? messageId, run);
+    setRun(repostId ?? postId ?? messageId, run);
     await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
 
     if (!showsRunId(run) && run.privateChannelId) renameDayChannel(run, parsed.date);
 
     let reply = `Run **${run.runId}** rescheduled to <t:${parsed.ts}:F>. Sign-ups are open again.`;
     if (!run.privateChannelId) reply += '\n(Its private channel was already deleted.)';
-    if (!postId) reply += "\n(The run post was deleted and a fresh copy couldn't be posted — only the saved record was updated.)";
+    if (!repostId && !postId) reply += "\n(The run post was deleted and a fresh copy couldn't be posted — only the saved record was updated.)";
     return interaction.editReply({ content: reply, components: [] });
   });
 }
