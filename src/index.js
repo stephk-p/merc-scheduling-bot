@@ -2011,6 +2011,17 @@ async function handleBotUpdate(interaction) {
     ));
   }
 
+  // An older launcher (started before this version) never reports back, so waiting would leave the
+  // reply "thinking" forever. It still checks and restarts on its own, so just say so.
+  if (process.env.LAUNCHER_REPORTS_UPDATES !== '1') {
+    process.send({ type: 'check-update', by: interaction.user.tag });
+    return interaction.reply(ephemeral(
+      '🔄 Checking GitHub now. If there\'s a new version I\'ll restart in a few seconds, otherwise nothing changes.\n' +
+      '⚠️ The launcher is still on an older version, so it can\'t report back. Restart the launcher (stop and start ' +
+      '`npm start`) once and `/botupdate` will show the full status from then on.',
+    ));
+  }
+
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const result = await new Promise((resolve) => {
     const onMessage = (msg) => {

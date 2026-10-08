@@ -32,7 +32,7 @@ let shuttingDown = false;
 function startBot() {
   // fork() (rather than spawn()) gives the bot process an IPC channel back to this launcher, so
   // /botupdate can ask for an on-demand update check without waiting for the daily schedule.
-  bot = fork(BOT_FILE, { cwd: ROOT, stdio: 'inherit' });
+  bot = fork(BOT_FILE, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, LAUNCHER_REPORTS_UPDATES: '1' } });
   bot.on('message', (msg) => {
     if (msg?.type !== 'check-update') return;
     log(`Manual update check requested${msg.by ? ` by ${msg.by}` : ''}.`);
