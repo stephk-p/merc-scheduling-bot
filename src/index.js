@@ -1,4 +1,7 @@
 import 'dotenv/config';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   ActionRowBuilder,
   ButtonBuilder,
@@ -11,6 +14,7 @@ import {
   ModalBuilder,
   OverwriteType,
   PermissionFlagsBits,
+  Routes,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
   TextInputBuilder,
@@ -76,6 +80,8 @@ import { getLogChannel, setLogChannel } from './logChannels.js';
 import { getMinAmount, getRequest, parseAmount, setMinAmount, setRequest } from './requests.js';
 
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
+// Written by src/launcher.js when /botupdate triggers an update (see confirmBotUpdate).
+const BOT_UPDATE_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data', 'botupdate.json');
 if (!DISCORD_TOKEN) {
   console.error('Missing DISCORD_TOKEN. Copy .env.example to .env and fill it in.');
   process.exit(1);
@@ -2002,10 +2008,62 @@ async function handleBotUpdate(interaction) {
     ));
   }
 
-  process.send({ type: 'check-update', by: interaction.user.tag });
-  return interaction.reply(ephemeral(
-    '🔄 Checking GitHub for updates now. If there\'s a new version, I\'ll restart in a few seconds — otherwise nothing changes.',
-  ));
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const result = await new Promise((resolve) => {
+    const onMessage = (msg) => {
+      if (msg?.type !== 'update-result' || msg.id !== interaction.id) return;
+      clearTimeout(timer);
+      process.off('message', onMessage);
+      resolve(msg);
+    };
+    const timer = setTimeout(() => {
+      process.off('message', onMessage);
+      resolve(null);
+    }, 3 * 60 * 1000);
+    process.on('message', onMessage);
+    process.send({
+      type: 'check-update',
+      id: interaction.id,
+      by: interaction.user.tag,
+      token: interaction.token,
+      appId: interaction.applicationId,
+    });
+  });
+
+  if (!result) return interaction.editReply("The updater didn't answer in time. Check the bot's console.");
+  if (result.status === 'none') {
+    return interaction.editReply(`✅ No update available. Already on **${result.to}** (${result.branch}). Not restarting.`);
+  }
+  if (result.status === 'updated') {
+    return interaction.editReply(
+      `⬇️ Update found: ${result.behind} new commit(s), **${result.from}** → **${result.to}**.\n` +
+      `${updateCommitLines(result)}\n🔄 Restarting now. I'll confirm here once I'm back up.`,
+    );
+  }
+  return interaction.editReply(`⚠️ Update check failed, still on the current version:\n${result.error ?? 'Unknown error.'}`);
+}
+
+const updateCommitLines = (info) => (info.commits ?? []).map((s) => `• ${s}`).join('\n');
+
+/**
+ * Right after a /botupdate-triggered restart: edits the owner's original ephemeral reply to confirm
+ * the bot came back up on the new version. The interaction token lasts 15 minutes, so a restart that
+ * somehow took longer just can't be confirmed (the note is dropped either way).
+ */
+async function confirmBotUpdate() {
+  let pending;
+  try {
+    pending = JSON.parse(fs.readFileSync(BOT_UPDATE_FILE, 'utf8'));
+  } catch {
+    return;
+  }
+  fs.rmSync(BOT_UPDATE_FILE, { force: true });
+  if (!pending.token || !pending.appId) return;
+
+  const content = `✅ Restarted and updated successfully. Now running **${pending.to}** (was **${pending.from}**).\n` +
+    updateCommitLines(pending);
+  await client.rest.patch(Routes.webhookMessage(pending.appId, pending.token, '@original'), { body: { content } })
+    .catch((err) => console.error('Couldn\'t confirm the bot update:', err.message));
 }
 
 // Stop looking up a plain-text name against the member list after this many /fixrun runs with no match.
@@ -3292,6 +3350,7 @@ async function registerCommands(c) {
 client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}. In ${c.guilds.cache.size} server(s).`);
   await registerCommands(c);
+  await confirmBotUpdate();
   await sweepChannels();
   await pruneRuns();
   await sweepReminders();
