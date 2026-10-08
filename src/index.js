@@ -1639,8 +1639,49 @@ function requestModal() {
       input('merc_run_type', 'Merc run type', TextInputStyle.Short, 'e.g. M4S clear', true, 300),
       input('role_job', 'Your role and job(s)', TextInputStyle.Short, 'e.g. MT, GNB or M1, NIN/SAM'),
       input('time', 'When (in your timezone)', TextInputStyle.Short, 'e.g. sept 28 @ 4 PM'),
-      input('notes', 'Notes (optional)', TextInputStyle.Paragraph, 'e.g. no echo, prog from P4', false, 300),
     );
+}
+
+// Requests waiting on the second step (extra clearees + notes), keyed by a token in the buttons' and
+// modal's customId. Expires if the requester never finishes.
+const pendingRequests = new Map();
+const PENDING_REQUEST_TTL_MS = 10 * 60 * 1000;
+const MAX_REQUEST_EXTRAS = 3;
+
+function stashRequest(req) {
+  const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  pendingRequests.set(token, req);
+  setTimeout(() => pendingRequests.delete(token), PENDING_REQUEST_TTL_MS).unref?.();
+  return token;
+}
+
+/** Second step: up to 3 extra clearees (one "Name, Role, Job(s)" line each), then notes. */
+function requestExtrasModal(token, withExtras) {
+  const modal = new ModalBuilder().setCustomId(`request:final:${token}:${withExtras ? 'yes' : 'no'}`)
+    .setTitle(withExtras ? 'Extra clearees and notes' : 'Notes');
+  if (withExtras) {
+    for (let i = 1; i <= MAX_REQUEST_EXTRAS; i++) {
+      modal.addComponents(new ActionRowBuilder().addComponents(
+        new TextInputBuilder()
+          .setCustomId(`extra${i}`)
+          .setLabel(`Extra clearee ${i}: name, role, job(s)${i > 1 ? ' (optional)' : ''}`)
+          .setPlaceholder('e.g. Alex, H1, WHM')
+          .setStyle(TextInputStyle.Short)
+          .setRequired(i === 1)
+          .setMaxLength(100),
+      ));
+    }
+  }
+  modal.addComponents(new ActionRowBuilder().addComponents(
+    new TextInputBuilder()
+      .setCustomId('notes')
+      .setLabel('Notes (optional)')
+      .setPlaceholder('e.g. no echo, prog from P4')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(false)
+      .setMaxLength(300),
+  ));
+  return modal;
 }
 
 function requestContent(req, statusLine) {
@@ -1649,6 +1690,9 @@ function requestContent(req, statusLine) {
     `📝 **Run request** from <@${req.userId}>`,
     `**Run:** ${req.amount} ${req.text}`,
     `**Role:** ${req.role}${jobs}`,
+    ...(req.extras?.length
+      ? [`**Extra clearees:** ${req.extras.map((e) => `${e.name} - ${e.role}${e.jobs.length ? ` (${e.jobs.join('/')})` : ''}`).join(', ')}`]
+      : []),
     `**When:** <t:${req.ts}:F> (<t:${req.ts}:R>)`,
     ...(req.note ? [`**Note:** ${req.note}`] : []),
     '',
@@ -1682,8 +1726,6 @@ async function handleRequestSubmit(interaction) {
   const text = noMassPing(interaction.fields.getTextInputValue('merc_run_type').trim());
   const roleJob = interaction.fields.getTextInputValue('role_job').trim().split(/[\s,/]+/).filter(Boolean);
   const timeInput = interaction.fields.getTextInputValue('time');
-  const noteInput = interaction.fields.getTextInputValue('notes').trim();
-  const note = noteInput ? noMassPing(noteInput) : null;
 
   const minAmount = getMinAmount(interaction.guildId);
   if (minAmount) {
@@ -1708,11 +1750,6 @@ async function handleRequestSubmit(interaction) {
   const parsed = parseTime(timeInput, zone);
   if (parsed.error) return interaction.reply(ephemeral(parsed.error));
 
-  const channel = await client.channels.fetch(channelId).catch(() => null);
-  if (!channel) {
-    return interaction.reply(ephemeral("I can't reach the requests channel right now. Let an admin know."));
-  }
-
   const req = {
     guildId: interaction.guildId,
     userId: interaction.user.id,
@@ -1720,13 +1757,67 @@ async function handleRequestSubmit(interaction) {
     text,
     role,
     jobs: check.jobs,
-    note,
+    note: null,
+    extras: [],
     ts: parsed.ts,
     zone,
     status: 'pending',
   };
+  const token = stashRequest(req);
+  return interaction.reply({
+    content: 'Will there be extra clearees on this run? (up to 3)',
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`reqx:yes:${token}`).setLabel('Yes').setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId(`reqx:no:${token}`).setLabel('No').setStyle(ButtonStyle.Secondary),
+    )],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function handleRequestExtrasButton(interaction, action, token) {
+  const req = pendingRequests.get(token);
+  if (!req) return interaction.update({ content: 'That took too long. Run `/request` again.', components: [] });
+  return interaction.showModal(requestExtrasModal(token, action === 'yes'));
+}
+
+async function handleRequestFinal(interaction) {
+  const [, , token, answer] = interaction.customId.split(':');
+  const req = pendingRequests.get(token);
+  if (!req) return interaction.reply(ephemeral('That took too long. Run `/request` again.'));
+
+  const extras = [];
+  if (answer === 'yes') {
+    const usedRoles = new Set([req.role]);
+    for (let i = 1; i <= MAX_REQUEST_EXTRAS; i++) {
+      const value = interaction.fields.getTextInputValue(`extra${i}`).trim();
+      if (!value) continue;
+      const [nameRaw, roleRaw, jobRaw = ''] = value.split(',').map((s) => s.trim());
+      if (!nameRaw || !roleRaw) {
+        return interaction.reply(ephemeral(`Extra clearee ${i} needs at least a name and a role, e.g. "Alex, H1, WHM".`));
+      }
+      const extraRole = roleRaw.toUpperCase();
+      if (!ROLES.includes(extraRole)) {
+        return interaction.reply(ephemeral(`"${roleRaw}" isn't a role for extra clearee ${i}. Pick from ${ROLES.join('/')}.`));
+      }
+      if (usedRoles.has(extraRole)) {
+        return interaction.reply(ephemeral(`Two clearees can't both have the **${extraRole}** slot.`));
+      }
+      usedRoles.add(extraRole);
+      const check = checkJobInput(extraRole, jobRaw, `extra clearee ${i} job`, missingJobs([extraRole], []).length > 0);
+      if (check.error) return interaction.reply(ephemeral(check.error));
+      extras.push({ name: noMassPing(nameRaw), role: extraRole, jobs: check.jobs });
+    }
+  }
+  const noteInput = interaction.fields.getTextInputValue('notes').trim();
+
+  const channel = await client.channels.fetch(REQUEST_CHANNEL[req.guildId]).catch(() => null);
+  if (!channel) {
+    return interaction.reply(ephemeral("I can't reach the requests channel right now. Let an admin know."));
+  }
+
+  const full = { ...req, extras, note: noteInput ? noMassPing(noteInput) : null };
   const post = await channel.send({
-    content: requestContent(req, '⏳ Waiting for an overseer or admin.'),
+    content: requestContent(full, '⏳ Waiting for an overseer or admin.'),
     components: [requestButtons()],
     allowedMentions: { parse: [] },
   }).catch((err) => {
@@ -1735,8 +1826,12 @@ async function handleRequestSubmit(interaction) {
   });
   if (!post) return interaction.reply(ephemeral("Couldn't submit your request. Let an admin know."));
 
-  setRequest(post.id, req);
-  return interaction.reply(ephemeral('✅ Your run request has been submitted.'));
+  pendingRequests.delete(token);
+  setRequest(post.id, full);
+  const done = '✅ Your run request has been submitted.';
+  return interaction.isFromMessage()
+    ? interaction.update({ content: done, components: [] })
+    : interaction.reply(ephemeral(done));
 }
 
 async function handleRequestButton(interaction, action) {
@@ -1808,7 +1903,7 @@ async function approveRequest(interaction) {
       noPing: false,
       requiredChannelId: null,
     };
-    await finishCreateRun(asCreate, ctx, []);
+    await finishCreateRun(asCreate, ctx, req.extras ?? []);
 
     const url = result.match(/^Run posted: (\S+)/)?.[1];
     if (!url) return interaction.editReply({ content: `Couldn't approve this request:\n${result}`, allowedMentions: { parse: [] } });
@@ -3278,6 +3373,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'manage') return await handleManageButton(interaction, action, messageId);
       if (ns === 'rmadopt') return await handleRemoveAdoptedRunButton(interaction, action, messageId);
       if (ns === 'req') return await handleRequestButton(interaction, action);
+      if (ns === 'reqx') return await handleRequestExtrasButton(interaction, action, messageId);
       if (ns !== 'run') return;
       if (action === 'join') return await handleJoin(interaction);
       if (action === 'leave') return await handleLeave(interaction);
@@ -3315,6 +3411,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'edit' && action === 'addname-submit') return await handleAddByNameSubmit(interaction, messageId);
       if (ns === 'createrun' && action === 'extra-submit') return await handleCreateRunExtraSubmit(interaction, messageId);
       if (ns === 'request' && action === 'submit') return await handleRequestSubmit(interaction);
+      if (ns === 'request' && action === 'final') return await handleRequestFinal(interaction);
       if (ns === 'req' && action === 'deny-submit') return await handleRequestDenySubmit(interaction);
     }
   } catch (err) {
