@@ -59,6 +59,17 @@ export const RUN_CHANNEL_CATEGORY = {
 // /privaterun can only be used in this channel, and its run post never pings anyone.
 export const PRIVATE_RUN_CHANNEL_ID = '1555479625851732028';
 
+// /request: where submitted run requests are posted for overseers/admins to approve or deny.
+// A server must have an entry here to accept requests.
+export const REQUEST_CHANNEL = {
+  [UMAD_GUILD_ID]: '1557632582181589012',
+};
+
+// Where an approved request's run post goes (its private channel is created like /createrun's).
+export const REQUEST_APPROVED_CHANNEL = {
+  [UMAD_GUILD_ID]: '1554406747504910356',
+};
+
 /** Commands that are limited by `commandRoles`. */
 export const RESTRICTED_COMMANDS = [
   'createrun', 'createrun-test', 'privaterun', 'adoptrun', 'managerun', 'runs', 'removeadoptedrun',

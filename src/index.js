@@ -24,6 +24,8 @@ import {
   BOT_OWNER_ID,
   DEFAULT_RUN_START_PING,
   PRIVATE_RUN_CHANNEL_ID,
+  REQUEST_APPROVED_CHANNEL,
+  REQUEST_CHANNEL,
   RESTRICTED_COMMANDS,
   RUN_CHANNEL_CATEGORY,
   RUN_START_PING,
@@ -71,6 +73,7 @@ import {
 } from './permissions.js';
 import { getStartPromptSettings, setStartPromptEnabled, setStartPromptRole } from './startPrompt.js';
 import { getLogChannel, setLogChannel } from './logChannels.js';
+import { getMinAmount, getRequest, parseAmount, setMinAmount, setRequest } from './requests.js';
 
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
 if (!DISCORD_TOKEN) {
@@ -103,6 +106,8 @@ const COMMAND_BLURBS = {
   startprompt: "Configure the run-starting DM, including an optional role to ping (admins only)",
   fixrun: "Repost a missing roster copy in any run's private channel (admins only)",
   setlogchannel: 'Set or clear the channel roster activity gets logged to (admins only)',
+  request: 'Submit a run request for an overseer to approve or deny',
+  requestmin: 'Set or clear the minimum amount a run request must have (admins only)',
   help: 'Show this help message',
 };
 
@@ -261,6 +266,17 @@ const commands = [
       o.setName('channel')
         .setDescription('Log channel (leave blank to turn logging off)')
         .addChannelTypes(ChannelType.GuildText)),
+  new SlashCommandBuilder()
+    .setName('request')
+    .setDescription('Request a run for an overseer to approve'),
+  new SlashCommandBuilder()
+    .setName('requestmin')
+    .setDescription('Set the minimum amount a run request must have (admins only)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption((o) =>
+      o.setName('amount')
+        .setDescription('Minimum amount, e.g. 5m (leave blank to remove the minimum)')
+        .setMaxLength(50)),
   new SlashCommandBuilder()
     .setName('botupdate')
     .setDescription("Check GitHub for an update right now, instead of waiting for the daily check")
@@ -1500,15 +1516,15 @@ async function handleHelp(interaction) {
 
   if (interaction.inGuild()) {
     lines.push('', '**Commands you can use here**');
-    const available = ['help', 'myruns', 'setpreference', 'settimezone']
+    const available = ['help', 'myruns', 'setpreference', 'settimezone', 'request']
       .concat(RESTRICTED_COMMANDS.filter((c) => c !== 'createrun-test'))
       .filter((c) => {
-        if (c === 'help' || c === 'myruns' || c === 'settimezone') return true;
+        if (c === 'help' || c === 'myruns' || c === 'settimezone' || c === 'request') return true;
         if (c === 'setpreference') return hasCommandAccess(interaction, c, 'preferenceRoles');
         return hasCommandAccess(interaction, c);
       });
     if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      available.push('permissions', 'startprompt', 'fixrun', 'setlogchannel');
+      available.push('permissions', 'startprompt', 'fixrun', 'setlogchannel', 'requestmin');
     }
     for (const c of available) lines.push(`• \`/${c}\` \u2014 ${COMMAND_BLURBS[c] ?? ''}`);
   } else {
@@ -1604,6 +1620,261 @@ async function handleStartPrompt(interaction) {
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });
+}
+
+// ---------------------------------------------------------------------------
+// /request: run requests that an overseer/admin approves or denies
+// ---------------------------------------------------------------------------
+function requestModal() {
+  const input = (id, label, style, placeholder, required = true, maxLength = 100) =>
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setPlaceholder(placeholder)
+        .setRequired(required).setMaxLength(maxLength),
+    );
+  return new ModalBuilder()
+    .setCustomId('request:submit')
+    .setTitle('Request a run')
+    .addComponents(
+      input('amount', 'Amount', TextInputStyle.Short, 'e.g. 5m', true, 50),
+      input('merc_run_type', 'Merc run type', TextInputStyle.Short, 'e.g. M4S clear', true, 300),
+      input('role_job', 'Your role and job(s)', TextInputStyle.Short, 'e.g. MT, GNB or M1, NIN/SAM'),
+      input('time', 'When (in your timezone)', TextInputStyle.Short, 'e.g. sept 28 @ 4 PM'),
+      input('notes', 'Notes (optional)', TextInputStyle.Paragraph, 'e.g. no echo, prog from P4', false, 300),
+    );
+}
+
+function requestContent(req, statusLine) {
+  const jobs = req.jobs.length ? ` (${req.jobs.join('/')})` : '';
+  return [
+    `📝 **Run request** from <@${req.userId}>`,
+    `**Run:** ${req.amount} ${req.text}`,
+    `**Role:** ${req.role}${jobs}`,
+    `**When:** <t:${req.ts}:F> (<t:${req.ts}:R>)`,
+    ...(req.note ? [`**Note:** ${req.note}`] : []),
+    '',
+    statusLine,
+  ].join('\n');
+}
+
+const requestButtons = () => new ActionRowBuilder().addComponents(
+  new ButtonBuilder().setCustomId('req:approve').setLabel('Approve').setEmoji('✅').setStyle(ButtonStyle.Success),
+  new ButtonBuilder().setCustomId('req:deny').setLabel('Deny').setEmoji('❌').setStyle(ButtonStyle.Danger),
+);
+
+async function handleRequest(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+  if (!REQUEST_CHANNEL[interaction.guildId] || !REQUEST_APPROVED_CHANNEL[interaction.guildId]) {
+    return interaction.reply(ephemeral("Run requests aren't set up in this server yet."));
+  }
+  if (!getUserZone(interaction.user.id)) {
+    return interaction.reply(ephemeral('Set your timezone once with `/settimezone` first, then run `/request` again.'));
+  }
+  return interaction.showModal(requestModal());
+}
+
+async function handleRequestSubmit(interaction) {
+  const channelId = REQUEST_CHANNEL[interaction.guildId];
+  if (!interaction.inGuild() || !channelId) {
+    return interaction.reply(ephemeral("Run requests aren't set up in this server yet."));
+  }
+
+  const amount = noMassPing(interaction.fields.getTextInputValue('amount').trim());
+  const text = noMassPing(interaction.fields.getTextInputValue('merc_run_type').trim());
+  const roleJob = interaction.fields.getTextInputValue('role_job').trim().split(/[\s,/]+/).filter(Boolean);
+  const timeInput = interaction.fields.getTextInputValue('time');
+  const noteInput = interaction.fields.getTextInputValue('notes').trim();
+  const note = noteInput ? noMassPing(noteInput) : null;
+
+  const minAmount = getMinAmount(interaction.guildId);
+  if (minAmount) {
+    const value = parseAmount(amount);
+    if (value === null) {
+      return interaction.reply(ephemeral(
+        `Enter the amount as a number like \`5m\`, \`500k\` or \`2.5m\`. The minimum for a request is **${minAmount}**.`));
+    }
+    if (value < parseAmount(minAmount)) {
+      return interaction.reply(ephemeral(`The minimum amount for a run request is **${minAmount}**.`));
+    }
+  }
+
+  const role = roleJob[0]?.toUpperCase();
+  if (!ROLES.includes(role)) {
+    return interaction.reply(ephemeral(`Start the role/job field with your role: ${ROLES.join('/')}. e.g. \`MT, GNB\`.`));
+  }
+  const check = checkJobInput(role, roleJob.slice(1).join('/'), 'role/job', true);
+  if (check.error) return interaction.reply(ephemeral(check.error));
+
+  const zone = getUserZone(interaction.user.id);
+  const parsed = parseTime(timeInput, zone);
+  if (parsed.error) return interaction.reply(ephemeral(parsed.error));
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel) {
+    return interaction.reply(ephemeral("I can't reach the requests channel right now. Let an admin know."));
+  }
+
+  const req = {
+    guildId: interaction.guildId,
+    userId: interaction.user.id,
+    amount,
+    text,
+    role,
+    jobs: check.jobs,
+    note,
+    ts: parsed.ts,
+    zone,
+    status: 'pending',
+  };
+  const post = await channel.send({
+    content: requestContent(req, '⏳ Waiting for an overseer or admin.'),
+    components: [requestButtons()],
+    allowedMentions: { parse: [] },
+  }).catch((err) => {
+    console.error('Couldn\'t post a run request:', err.message);
+    return null;
+  });
+  if (!post) return interaction.reply(ephemeral("Couldn't submit your request. Let an admin know."));
+
+  setRequest(post.id, req);
+  return interaction.reply(ephemeral('✅ Your run request has been submitted.'));
+}
+
+async function handleRequestButton(interaction, action) {
+  if (!hasCommandAccess(interaction, 'createrun')) {
+    return interaction.reply(ephemeral(commandAccessDeniedText(interaction, 'approve or deny run requests')));
+  }
+  const req = getRequest(interaction.message.id);
+  if (!req) return interaction.reply(ephemeral('That request no longer exists.'));
+  if (req.status !== 'pending') return interaction.reply(ephemeral(`That request was already ${req.status}.`));
+
+  if (action === 'deny') {
+    return interaction.showModal(
+      new ModalBuilder()
+        .setCustomId(`req:deny-submit:${interaction.message.id}`)
+        .setTitle('Deny run request')
+        .addComponents(
+          new ActionRowBuilder().addComponents(
+            new TextInputBuilder()
+              .setCustomId('reason')
+              .setLabel('Reason for denying')
+              .setStyle(TextInputStyle.Paragraph)
+              .setRequired(true)
+              .setMaxLength(500),
+          ),
+        ),
+    );
+  }
+  if (action === 'approve') return approveRequest(interaction);
+  return undefined;
+}
+
+/** Creates the run exactly like /createrun would (post, private channel, roster copy), in the approved-runs channel. */
+async function approveRequest(interaction) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  const requestId = interaction.message.id;
+
+  return withLock(`req:${requestId}`, async () => {
+    const req = getRequest(requestId);
+    if (!req) return interaction.editReply('That request no longer exists.');
+    if (req.status !== 'pending') return interaction.editReply(`That request was already ${req.status}.`);
+    if (req.ts * 1000 <= Date.now()) {
+      return interaction.editReply('That start time has already passed. Deny the request and ask them to submit a new one.');
+    }
+
+    const channel = await client.channels.fetch(REQUEST_APPROVED_CHANNEL[req.guildId]).catch(() => null);
+    if (!channel) return interaction.editReply("I can't reach the channel approved runs are posted in.");
+
+    // finishCreateRun only needs these from an interaction, so the approver stands in as the creator
+    // and the approved-runs channel as where the command was "used".
+    let result = '';
+    const asCreate = {
+      guild: interaction.guild,
+      guildId: interaction.guildId,
+      channel,
+      channelId: channel.id,
+      user: interaction.user,
+      client: interaction.client,
+      editReply: async (reply) => { result = typeof reply === 'string' ? reply : reply.content; },
+    };
+    const ctx = {
+      amount: req.amount,
+      text: req.text,
+      cleareeInput: `<@${req.userId}>`,
+      role: req.role,
+      jobs: req.jobs,
+      note: req.note,
+      parsed: { ts: req.ts, date: DateTime.fromSeconds(req.ts, { zone: req.zone }) },
+      test: false,
+      noPing: false,
+      requiredChannelId: null,
+    };
+    await finishCreateRun(asCreate, ctx, []);
+
+    const url = result.match(/^Run posted: (\S+)/)?.[1];
+    if (!url) return interaction.editReply({ content: `Couldn't approve this request:\n${result}`, allowedMentions: { parse: [] } });
+
+    req.status = 'approved';
+    req.decidedAt = Date.now();
+    setRequest(requestId, req);
+    await interaction.message.edit({
+      content: requestContent(req, `✅ Approved by <@${interaction.user.id}>: ${url}`),
+      components: [],
+      allowedMentions: { parse: [] },
+    }).catch((err) => console.error('Couldn\'t update the approved request:', err.message));
+    const user = await client.users.fetch(req.userId).catch(() => null);
+    await user?.send(`Your run request for **${req.amount} ${req.text}** was approved: ${url}`).catch(() => {});
+    return interaction.editReply({ content: result, allowedMentions: { parse: [] } });
+  });
+}
+
+async function handleRequestDenySubmit(interaction) {
+  if (!hasCommandAccess(interaction, 'createrun')) {
+    return interaction.reply(ephemeral(commandAccessDeniedText(interaction, 'approve or deny run requests')));
+  }
+  const requestId = interaction.customId.split(':')[2];
+  const reason = noMassPing(interaction.fields.getTextInputValue('reason').trim());
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  return withLock(`req:${requestId}`, async () => {
+    const req = getRequest(requestId);
+    if (!req) return interaction.editReply('That request no longer exists.');
+    if (req.status !== 'pending') return interaction.editReply(`That request was already ${req.status}.`);
+
+    req.status = 'denied';
+    req.decidedAt = Date.now();
+    setRequest(requestId, req);
+    await interaction.message?.edit({
+      content: requestContent(req, `❌ Denied by <@${interaction.user.id}>\n**Reason:** ${reason}`),
+      components: [],
+      allowedMentions: { parse: [] },
+    }).catch((err) => console.error('Couldn\'t update the denied request:', err.message));
+
+    const user = await client.users.fetch(req.userId).catch(() => null);
+    const sent = await user?.send(
+      `Your run request for **${req.amount} ${req.text}** was denied.\n**Reason:** ${reason}`,
+    ).then(() => true, () => false);
+    return interaction.editReply(sent
+      ? 'Request denied and the requester was DMed the reason.'
+      : "Request denied, but I couldn't DM the requester (their DMs may be closed).");
+  });
+}
+
+async function handleRequestMin(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+  if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    return interaction.reply(ephemeral('Only server administrators can use `/requestmin`.'));
+  }
+
+  const amount = interaction.options.getString('amount')?.trim();
+  if (!amount) {
+    setMinAmount(interaction.guildId, null);
+    return interaction.reply(ephemeral('Minimum removed. Run requests can be for any amount.'));
+  }
+  if (parseAmount(amount) === null) {
+    return interaction.reply(ephemeral('Enter the minimum as a number like `5m`, `500k` or `2.5m`.'));
+  }
+  setMinAmount(interaction.guildId, amount);
+  return interaction.reply(ephemeral(`✅ Run requests must now be for at least **${amount}**.`));
 }
 
 async function handleSetLogChannel(interaction) {
@@ -2977,6 +3248,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'startprompt': return await handleStartPrompt(interaction);
         case 'fixrun': return await handleFixRun(interaction);
         case 'setlogchannel': return await handleSetLogChannel(interaction);
+        case 'request': return await handleRequest(interaction);
+        case 'requestmin': return await handleRequestMin(interaction);
         case 'botupdate': return await handleBotUpdate(interaction);
         default: return;
       }
@@ -3004,6 +3277,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'pref') return await handlePrefButton(interaction, action, picks, jobs);
       if (ns === 'manage') return await handleManageButton(interaction, action, messageId);
       if (ns === 'rmadopt') return await handleRemoveAdoptedRunButton(interaction, action, messageId);
+      if (ns === 'req') return await handleRequestButton(interaction, action);
       if (ns !== 'run') return;
       if (action === 'join') return await handleJoin(interaction);
       if (action === 'leave') return await handleLeave(interaction);
@@ -3040,6 +3314,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'manage' && action === 'details-submit') return await handleDetailsSubmit(interaction, messageId);
       if (ns === 'edit' && action === 'addname-submit') return await handleAddByNameSubmit(interaction, messageId);
       if (ns === 'createrun' && action === 'extra-submit') return await handleCreateRunExtraSubmit(interaction, messageId);
+      if (ns === 'request' && action === 'submit') return await handleRequestSubmit(interaction);
+      if (ns === 'req' && action === 'deny-submit') return await handleRequestDenySubmit(interaction);
     }
   } catch (err) {
     console.error(err);
