@@ -1645,6 +1645,7 @@ function requestModal() {
       input('merc_run_type', 'Merc run type', TextInputStyle.Short, 'e.g. M4S clear', true, 300),
       input('role_job', 'Your role and job(s)', TextInputStyle.Short, 'e.g. MT, GNB or M1, NIN/SAM'),
       input('time', 'When (in your timezone)', TextInputStyle.Short, 'e.g. sept 28 @ 4 PM'),
+      input('notes', 'Notes (optional)', TextInputStyle.Paragraph, 'e.g. no echo, prog from P4', false, 300),
     );
 }
 
@@ -1662,7 +1663,7 @@ function stashRequest(req) {
 }
 
 /** Second step: up to 3 extra clearees (one "Name, Role, Job(s)" line each), then notes. */
-function requestExtrasModal(token, withExtras) {
+function requestExtrasModal(token, withExtras, note = null) {
   const modal = new ModalBuilder().setCustomId(`request:final:${token}:${withExtras ? 'yes' : 'no'}`)
     .setTitle(withExtras ? 'Extra clearees and notes' : 'Notes');
   if (withExtras) {
@@ -1670,7 +1671,7 @@ function requestExtrasModal(token, withExtras) {
       modal.addComponents(new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId(`extra${i}`)
-          .setLabel(`Extra clearee ${i}: name, role, job(s)${i > 1 ? ' (optional)' : ''}`)
+          .setLabel(i === 1 ? 'Extra clearee 1: name, role, job(s)' : `Extra clearee ${i} (optional)`)
           .setPlaceholder('e.g. Alex, H1, WHM')
           .setStyle(TextInputStyle.Short)
           .setRequired(i === 1)
@@ -1678,15 +1679,16 @@ function requestExtrasModal(token, withExtras) {
       ));
     }
   }
-  modal.addComponents(new ActionRowBuilder().addComponents(
-    new TextInputBuilder()
-      .setCustomId('notes')
-      .setLabel('Notes (optional)')
-      .setPlaceholder('e.g. no echo, prog from P4')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(false)
-      .setMaxLength(300),
-  ));
+  const notesInput = new TextInputBuilder()
+    .setCustomId('notes')
+    .setLabel('Notes (optional)')
+    .setPlaceholder('e.g. no echo, prog from P4')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setMaxLength(300);
+  // Carries over whatever was typed in the first form.
+  if (note) notesInput.setValue(note);
+  modal.addComponents(new ActionRowBuilder().addComponents(notesInput));
   return modal;
 }
 
@@ -1732,6 +1734,7 @@ async function handleRequestSubmit(interaction) {
   const text = noMassPing(interaction.fields.getTextInputValue('merc_run_type').trim());
   const roleJob = interaction.fields.getTextInputValue('role_job').trim().split(/[\s,/]+/).filter(Boolean);
   const timeInput = interaction.fields.getTextInputValue('time');
+  const noteInput = interaction.fields.getTextInputValue('notes').trim();
 
   const minAmount = getMinAmount(interaction.guildId);
   if (minAmount) {
@@ -1763,7 +1766,7 @@ async function handleRequestSubmit(interaction) {
     text,
     role,
     jobs: check.jobs,
-    note: null,
+    note: noteInput ? noMassPing(noteInput) : null,
     extras: [],
     ts: parsed.ts,
     zone,
@@ -1783,7 +1786,7 @@ async function handleRequestSubmit(interaction) {
 async function handleRequestExtrasButton(interaction, action, token) {
   const req = pendingRequests.get(token);
   if (!req) return interaction.update({ content: 'That took too long. Run `/request` again.', components: [] });
-  return interaction.showModal(requestExtrasModal(token, action === 'yes'));
+  return interaction.showModal(requestExtrasModal(token, action === 'yes', req.note));
 }
 
 async function handleRequestFinal(interaction) {
