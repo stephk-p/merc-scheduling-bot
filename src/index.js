@@ -689,11 +689,25 @@ async function findClearee(guild, input) {
   const id = text.match(/^<@!?(\d{15,21})>$/)?.[1] ?? text.match(/^(\d{15,21})$/)?.[1];
   if (id) return guild.members.fetch(id).catch(() => null);
 
+  // The suggestion list shows "Display Name (username)", so typed-in copies of that label match by
+  // username first, then by display name.
+  const label = text.match(/^(.*?)\s*\(([^()]+)\)$/);
+  if (label) {
+    const byUsername = await findClearee(guild, label[2]);
+    if (byUsername) return byUsername;
+    if (label[1]) return findClearee(guild, label[1]);
+  }
+
   const name = text.replace(/^@/, '').toLowerCase();
   if (!name) return null;
   const found = await guild.members.search({ query: name, limit: 25 }).catch(() => null);
-  const exact = [...(found?.values() ?? [])].filter((m) => memberNames(m).includes(name));
-  return exact.length === 1 ? exact[0] : null; // several people with that name: don't guess
+  const people = [...(found?.values() ?? [])].filter((m) => !m.user.bot);
+  const exact = people.filter((m) => memberNames(m).includes(name));
+  if (exact.length) return exact.length === 1 ? exact[0] : null; // several people with that name: don't guess
+
+  // No exact match (e.g. typed "steph" for "Steph K"): accept a single clear partial match, never a guess between several.
+  const partial = people.filter((m) => memberNames(m).some((n) => n.startsWith(name)));
+  return partial.length === 1 ? partial[0] : null;
 }
 
 async function autocompleteClearee(interaction, query) {
@@ -860,7 +874,7 @@ async function fetchPrivateChannel(run) {
  * separate private channel to grant access to, and it's not meant to be access-controlled anyway.
  */
 async function addToPrivateChannel(run, userId) {
-  if (run.privateChannelId === run.channelId) return;
+  if (run.privateChannelId === run.channelId && !run.privateOnly) return;
   try {
     const channel = await fetchPrivateChannel(run);
     if (!channel || channel.permissionOverwrites.cache.has(userId)) return;
@@ -876,7 +890,7 @@ async function addToPrivateChannel(run, userId) {
 
 /** Remove a user from the run's private channel. The creator and clearee always keep access. No message is posted. */
 async function removeFromPrivateChannel(run, userId) {
-  if (run.privateChannelId === run.channelId) return;
+  if (run.privateChannelId === run.channelId && !run.privateOnly) return;
   if ([run.creatorId, run.cleareeId, ...(run.extraClearees ?? []).map((e) => e.id)].includes(userId)) return;
   try {
     const channel = await fetchPrivateChannel(run);
@@ -893,9 +907,10 @@ async function removeFromPrivateChannel(run, userId) {
  * since that's the only way to catch access lost outside the bot's own actions.
  */
 async function syncChannelAccess(run) {
-  if (run.privateChannelId === run.channelId) return;
+  const failed = [];
+  if (run.privateChannelId === run.channelId && !run.privateOnly) return failed;
   const channel = await fetchPrivateChannel(run);
-  if (!channel) return;
+  if (!channel) return failed;
   for (const userId of channelMembers(run)) {
     const overwrite = channel.permissionOverwrites.cache.get(userId);
     if (overwrite?.allow.has(PermissionFlagsBits.ViewChannel)) continue;
@@ -903,9 +918,12 @@ async function syncChannelAccess(run) {
       userId,
       { ViewChannel: true, SendMessages: true, ReadMessageHistory: true },
       { type: OverwriteType.Member, reason: `Re-granting access to merc run ${run.runId}` },
-    ).catch((err) =>
-      console.error(`Couldn't re-grant ${userId} access to the channel for run ${run.runId}:`, err.message));
+    ).catch((err) => {
+      failed.push(userId);
+      console.error(`Couldn't re-grant ${userId} access to the channel for run ${run.runId}:`, err.message);
+    });
   }
+  return failed;
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,6 +1378,9 @@ async function handleCreateRunExtraSubmit(interaction, token) {
 async function finishCreateRun(interaction, ctx, extras) {
   const { amount, text, cleareeInput, role, jobs, note, parsed, test, noPing, requiredChannelId } = ctx;
   void requiredChannelId; // already checked in handleCreateRun before this runs
+  // /privaterun: no public sign-up post. The roster lives only in the run's private channel and is
+  // managed through /managerun, and nobody is pinged.
+  const privateOnly = noPing;
 
   const me = interaction.guild.members.me ?? (await interaction.guild.members.fetchMe());
   const postChannel = interaction.channel ?? (await client.channels.fetch(interaction.channelId).catch(() => null));
@@ -1368,6 +1389,7 @@ async function finishCreateRun(interaction, ctx, extras) {
   // and are added to the private channel; otherwise the text is just shown as their name.
   const runId = newRunId();
   const clearee = await resolveClearee(interaction.guild, cleareeInput, `clearee-${runId}`);
+  if (!clearee.member) console.warn(`Run ${runId}: no member matched the clearee input ${JSON.stringify(cleareeInput)}.`);
   const resolvedExtras = [];
   for (const [i, extra] of extras.entries()) {
     const resolved = await resolveClearee(interaction.guild, extra.name, `clearee${i + 2}-${runId}`);
@@ -1386,11 +1408,12 @@ async function finishCreateRun(interaction, ctx, extras) {
 
   // Each clearee is @mentioned (and pinged) if they're a member who can see this channel.
   const pingMain = Boolean(cleareeMember &&
-    postChannel?.permissionsFor(cleareeMember)?.has(PermissionFlagsBits.ViewChannel));
+    (privateOnly || postChannel?.permissionsFor(cleareeMember)?.has(PermissionFlagsBits.ViewChannel)));
   const cleareeShown = pingMain ? `<@${cleareeMember.id}>` : cleareeName;
 
   const extraInfo = resolvedExtras.map((extra) => {
-    const pinged = Boolean(extra.member && postChannel?.permissionsFor(extra.member)?.has(PermissionFlagsBits.ViewChannel));
+    const pinged = Boolean(extra.member &&
+      (privateOnly || postChannel?.permissionsFor(extra.member)?.has(PermissionFlagsBits.ViewChannel)));
     const shown = pinged ? `<@${extra.member.id}>` : extra.name;
     return { ...extra, pinged, shown };
   });
@@ -1437,20 +1460,25 @@ async function finishCreateRun(interaction, ctx, extras) {
     return interaction.editReply(`Couldn't create the private channel for this run: ${err.message}`);
   }
   run.privateChannelId = privateChannel.id;
+  if (privateOnly) {
+    run.channelId = privateChannel.id;
+    run.buttonless = true;
+    run.privateOnly = true;
+  }
 
   const rendered = render(run);
   run.placed = rendered.placed;
   let post;
   try {
-    const channel = postChannel ?? (await client.channels.fetch(interaction.channelId));
+    const channel = privateOnly ? privateChannel : (postChannel ?? (await client.channels.fetch(interaction.channelId)));
     const pingedUsers = [
       ...(pingMain ? [cleareeMember.id] : []),
       ...extraInfo.filter((e) => e.pinged).map((e) => e.member.id),
     ];
     post = await channel.send({
       content: rendered.content,
-      components: [runButtons()],
-      allowedMentions: { ...ping.allowedMentions, users: pingedUsers },
+      components: privateOnly ? [] : [runButtons()],
+      allowedMentions: privateOnly ? { parse: [] } : { ...ping.allowedMentions, users: pingedUsers },
     });
   } catch (err) {
     console.error(`Couldn't post run ${run.runId}:`, err);
@@ -1460,10 +1488,16 @@ async function finishCreateRun(interaction, ctx, extras) {
     );
   }
   setRun(post.id, run);
+  // Confirms everyone who should see the channel actually can, and fixes it right away if not.
+  const accessFailed = await syncChannelAccess(run).catch((err) => {
+    console.error(`Couldn't verify channel access for run ${run.runId}:`, err.message);
+    return [];
+  });
   await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
 
   // Copy of the run post in the private channel. It's kept in sync whenever the roster changes.
-  const copy = await privateChannel.send({
+  // Not needed for /privaterun, where the post itself is already in the private channel.
+  const copy = privateOnly ? null : await privateChannel.send({
     content: rosterCopyContent(run, rendered.content),
     allowedMentions: { parse: [] },
   }).catch((err) => {
@@ -1476,7 +1510,9 @@ async function finishCreateRun(interaction, ctx, extras) {
     await copy.pin('Run roster').catch(() => {}); // needs Manage Messages; fine if it can't
   }
 
-  let done = `Run posted: ${post.url}\nMerc Run ID: **${run.runId}** · Channel: <#${privateChannel.id}>`;
+  let done = privateOnly
+    ? `Private run created: <#${privateChannel.id}>\nMerc Run ID: **${run.runId}** (manage it with \`/managerun\`)`
+    : `Run posted: ${post.url}\nMerc Run ID: **${run.runId}** · Channel: <#${privateChannel.id}>`;
   const pingRole = ping.roleId && interaction.guild.roles.cache.get(ping.roleId);
   const canPing = post.channel.permissionsFor(me)?.has(PermissionFlagsBits.MentionEveryone) ||
     (pingRole && pingRole.mentionable);
@@ -1494,6 +1530,10 @@ async function finishCreateRun(interaction, ctx, extras) {
     } else if (!e.pinged) {
       done += `\n${e.name} can't see this channel, so they're shown by name instead of pinged. They were still added to the private channel.`;
     }
+  }
+  if (accessFailed.length) {
+    done += `\n⚠️ I couldn't give ${accessFailed.map((id) => `<@${id}>`).join(', ')} access to the private channel ` +
+      "(check my Manage Roles / Manage Channels permissions and that I can see the category). I'll keep retrying every minute.";
   }
   await interaction.editReply({ content: done, allowedMentions: { parse: [] } });
 }
