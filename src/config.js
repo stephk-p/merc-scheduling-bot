@@ -11,7 +11,7 @@ export const BOT_OWNER_ID = '103037694984073216';
 //
 //   commandRoles - only members with at least one of these roles can use
 //                  /createrun, /createrun-test, /privaterun, /adoptrun, /managerun and /runs.
-//                  Not set: only server admins (plus anyone granted access via /permissions).
+//                  Not set: only server admins (plus anyone granted access via /access).
 //   signupRoles  - only members with at least one of these roles can sign up for runs
 //                  (anyone can still press Leave). Not set: open to everyone.
 //   preferenceRoles - only members with at least one of these roles can use /setpreference.

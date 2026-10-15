@@ -95,7 +95,7 @@ const CHANNEL_DELETE_DELAY_MS = 3 * 60 * 60 * 1000;
 const REMINDER_OPTIONS = [60, 30, 15, 10, 5];
 const reminderLabel = (m) => (m === 60 ? '1 hour before' : `${m} minutes before`);
 
-// Commands an admin can grant/revoke access to for a specific role or member via /permissions,
+// Commands an admin can grant/revoke access to for a specific role or member via /access,
 // on top of the server's normal commandRoles/preferenceRoles.
 const GRANTABLE_COMMANDS = ['createrun', 'privaterun', 'adoptrun', 'managerun', 'runs', 'setpreference', 'removeadoptedrun'];
 
@@ -109,11 +109,13 @@ const COMMAND_BLURBS = {
   myruns: "See the runs you're signed up for, what time they start and a link to each",
   setpreference: 'Save your usual roles/jobs and choose DM reminder times',
   settimezone: 'Save or change your timezone',
-  permissions: 'Grant or revoke who can use restricted commands (admins only)',
+  access: 'Pick which commands a role or member can use (admins only)',
+  permissionlist: 'Show which roles and members can use which commands (admins only)',
   startprompt: "Configure the run-starting DM, including an optional role to ping (admins only)",
   fixrun: "Repost a missing roster copy in any run's private channel (admins only)",
   setlogchannel: 'Set or clear the channel roster activity gets logged to (admins only)',
   request: 'Submit a run request for an overseer to approve or deny',
+  botupdate: 'Check GitHub for an update and restart if there is one (bot owner only)',
   requestmin: 'Set or clear the minimum amount a run request must have (admins only)',
   help: 'Show this help message',
 };
@@ -215,26 +217,15 @@ const commands = [
     .setName('help')
     .setDescription('How to sign up for runs and which commands you can use here'),
   new SlashCommandBuilder()
-    .setName('permissions')
-    .setDescription("Grant or revoke who can use this server's restricted commands")
+    .setName('access')
+    .setDescription("Pick which commands a role or member can use (admins only)")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addSubcommand((sc) => sc
-      .setName('grant')
-      .setDescription("Let a role or member use a command, on top of the server's normal rules")
-      .addStringOption((o) => o.setName('command').setDescription('Command to grant').setRequired(true)
-        .addChoices(...GRANTABLE_COMMANDS.map((c) => ({ name: `/${c}`, value: c }))))
-      .addRoleOption((o) => o.setName('role').setDescription('Role to grant (pick this or member)'))
-      .addUserOption((o) => o.setName('member').setDescription('Member to grant (pick this or role)')))
-    .addSubcommand((sc) => sc
-      .setName('revoke')
-      .setDescription('Remove a previously granted role or member')
-      .addStringOption((o) => o.setName('command').setDescription('Command to revoke').setRequired(true)
-        .addChoices(...GRANTABLE_COMMANDS.map((c) => ({ name: `/${c}`, value: c }))))
-      .addRoleOption((o) => o.setName('role').setDescription('Role to revoke (pick this or member)'))
-      .addUserOption((o) => o.setName('member').setDescription('Member to revoke (pick this or role)')))
-    .addSubcommand((sc) => sc
-      .setName('list')
-      .setDescription('Show every role/member grant in this server')),
+    .addRoleOption((o) => o.setName('role').setDescription('Role to set access for (pick this or member)'))
+    .addUserOption((o) => o.setName('member').setDescription('Member to set access for (pick this or role)')),
+  new SlashCommandBuilder()
+    .setName('permissionlist')
+    .setDescription('Show which roles and members can use which commands (admins only)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
   new SlashCommandBuilder()
     .setName('startprompt')
     .setDescription("Configure the DM sent when a run's scheduled time arrives")
@@ -817,7 +808,7 @@ const needRoleText = (interaction, rule, action) =>
 
 /**
  * Whether the member can use a restricted command: a server admin, someone passing the server's
- * `commandRoles` rule (if set), or someone granted this specific command via /permissions.
+ * `commandRoles` rule (if set), or someone granted this specific command via /access.
  * Restricted commands (`rule === 'commandRoles'`) default to admin-only when a server hasn't set
  * `commandRoles` at all; other rules (preferenceRoles, signupRoles) stay open by default.
  */
@@ -842,7 +833,7 @@ function commandAccessDeniedText(interaction, action) {
   const who = required?.length
     ? `members with the ${required.map((id) => `<@&${id}>`).join(' or ')} role, server administrators,`
     : 'server administrators';
-  return `Only ${who} or members granted access via \`/permissions\` can ${action}.`;
+  return `Only ${who} or members granted access via \`/access\` can ${action}.`;
 }
 
 function canManage(interaction, run) {
@@ -857,7 +848,7 @@ function notManagerText(interaction) {
   const who = required?.length
     ? `members with the ${required.map((id) => `<@&${id}>`).join(' or ')} role, server administrators,`
     : 'server administrators';
-  return `Only ${who} or members granted access via \`/permissions\` can use \`/managerun\` here — ` +
+  return `Only ${who} or members granted access via \`/access\` can use \`/managerun\` here — ` +
     "and even then, only the run's creator or someone with Manage Channels can manage this specific run.";
 }
 
@@ -1123,7 +1114,7 @@ async function sendDmReminder(run, userId, minutes) {
  * role), when the scheduled time arrives — prompting them to mark it completed/failed or
  * reschedule it. Everyone is deduped first, so holding both never means two DMs. Same
  * manage:complete/fail/reschedule buttons /managerun uses, so clicking them is gated the same way
- * (commandRoles, an admin, or a /permissions grant) — Reschedule just opens that same modal and
+ * (commandRoles, an admin, or an /access grant) — Reschedule just opens that same modal and
  * doesn't change anything until it's submitted.
  */
 async function sendStartPrompt(run, messageId) {
@@ -1157,7 +1148,7 @@ function isStartPromptEnabled(guildId) {
   return override ?? Boolean(START_PROMPT_ENABLED[guildId]);
 }
 
-/** Whether this role (not a specific member) passes commandRoles or a /permissions grant for `command`. */
+/** Whether this role (not a specific member) passes commandRoles or an /access grant for `command`. */
 function hasRoleCommandAccess(guildId, roleId, command) {
   if (SERVER_RULES[guildId]?.commandRoles?.includes(roleId)) return true;
   return getGrants(guildId, command).roles.includes(roleId);
@@ -1600,78 +1591,217 @@ async function handleSetTimezone(interaction) {
 // /help
 // ---------------------------------------------------------------------------
 async function handleHelp(interaction) {
-  const lines = [
-    '**Signing up for a run**',
-    'Press **Sign up** on a run post, pick one or more roles in the order you\'d take them (add jobs if asked), ' +
-      'then press **Confirm**. Picking several roles makes you a flex: you get the first one that\'s free and move ' +
-      'up automatically when a better one opens. Press **Leave** to drop out any time.',
-    'Use `/setpreference` to save your usual roles/jobs (and pick DM reminder times), and `/settimezone` so run ' +
-      "times show correctly for you.",
-  ];
+  const inGuild = interaction.inGuild();
+  const bullets = (commands) => commands.map((c) => `• \`/${c}\` — ${COMMAND_BLURBS[c] ?? ''}`);
+  const sections = [];
 
-  if (interaction.inGuild()) {
-    lines.push('', '**Commands you can use here**');
-    const available = ['help', 'myruns', 'setpreference', 'settimezone', 'request']
-      .concat(RESTRICTED_COMMANDS.filter((c) => c !== 'createrun-test'))
-      .filter((c) => {
-        if (c === 'help' || c === 'myruns' || c === 'settimezone' || c === 'request') return true;
-        if (c === 'setpreference') return hasCommandAccess(interaction, c, 'preferenceRoles');
-        return hasCommandAccess(interaction, c);
-      });
-    if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-      available.push('permissions', 'startprompt', 'fixrun', 'setlogchannel', 'requestmin');
+  // Everyone
+  sections.push([
+    '**Requesting a run**',
+    'Use `/request` to ask for a run: fill in the amount, run type, your role/job, the time and any notes ' +
+      '(you can add up to 3 extra clearees). An overseer approves or denies it, and you get a DM either way.',
+    'Set your timezone once with `/settimezone` so times show correctly for you.',
+  ]);
+
+  // Anyone who can sign up (everyone, in servers that don't restrict it)
+  if (!inGuild || hasRuleRole(interaction, 'signupRoles')) {
+    const signUp = [
+      '**Signing up for a run**',
+      'Press **Sign up** on a run post, pick one or more roles in the order you\'d take them (add jobs if asked), ' +
+        'then press **Confirm**. Picking several roles makes you a flex: you get the first one that\'s free and move ' +
+        'up automatically when a better one opens. Press **Leave** to drop out any time.',
+      ...bullets(['myruns']),
+    ];
+    if (!inGuild || hasCommandAccess(interaction, 'setpreference', 'preferenceRoles')) {
+      signUp.push(...bullets(['setpreference']));
     }
-    for (const c of available) lines.push(`• \`/${c}\` \u2014 ${COMMAND_BLURBS[c] ?? ''}`);
-  } else {
-    lines.push('', 'Run this in a server to see which commands you have access to there.');
+    sections.push(signUp);
   }
 
-  return interaction.reply({ content: lines.join('\n'), flags: MessageFlags.Ephemeral });
+  if (!inGuild) {
+    sections.push(['Run `/help` in a server to see everything you can do there.']);
+  } else {
+    // Anyone who can create or manage runs
+    const runCommands = ['createrun', 'privaterun', 'adoptrun', 'managerun', 'runs', 'removeadoptedrun']
+      .filter((c) => hasCommandAccess(interaction, c));
+    if (runCommands.length) {
+      const manage = ['**Creating and managing runs**', ...bullets(runCommands)];
+      if (runCommands.includes('managerun')) {
+        manage.push('Give `/managerun` a run\'s Merc Run ID to mark it completed or failed, reschedule it, ' +
+          'edit its roster, change its details, or delete it.');
+      }
+      if (runCommands.includes('createrun')) {
+        manage.push('**Run requests:** requests appear in the requests channel with **Approve** and **Deny** ' +
+          'buttons. Approving creates the run like `/createrun`. Denying asks for a reason, which is DMed to the requester.');
+      }
+      sections.push(manage);
+    }
+
+    // Admins
+    if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+      sections.push([
+        '**Server admin tools**',
+        ...bullets(['access', 'permissionlist', 'startprompt', 'fixrun', 'setlogchannel', 'requestmin']),
+      ]);
+    }
+
+    if (interaction.user.id === BOT_OWNER_ID) sections.push(['**Bot owner**', ...bullets(['botupdate'])]);
+  }
+
+  return interaction.reply({
+    embeds: [{
+      title: 'Merc Scheduling Bot help',
+      description: sections.map((s) => s.join('\n')).join('\n\n').slice(0, 4000),
+      color: 0x5865f2,
+    }],
+    flags: MessageFlags.Ephemeral,
+  });
 }
 
 // ---------------------------------------------------------------------------
-// /permissions
+// /access and /permissionlist
 // ---------------------------------------------------------------------------
-async function handlePermissions(interaction) {
-  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+const requireAdmin = async (interaction, command) => {
+  if (!interaction.inGuild()) {
+    await interaction.reply(ephemeral('This command only works in a server.'));
+    return false;
+  }
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
-    return interaction.reply(ephemeral('Only server administrators can use `/permissions`.'));
+    await interaction.reply(ephemeral(`Only server administrators can use \`/${command}\`.`));
+    return false;
   }
+  return true;
+};
 
-  const sub = interaction.options.getSubcommand();
-  if (sub === 'list') {
-    const grants = getGuildGrants(interaction.guildId);
-    const lines = Object.entries(grants)
-      .filter(([, g]) => g.roles?.length || g.users?.length)
-      .map(([command, g]) => {
-        const who = [...(g.roles ?? []).map((id) => `<@&${id}>`), ...(g.users ?? []).map((id) => `<@${id}>`)];
-        return `**/${command}**: ${who.join(', ')}`;
-      });
-    return interaction.reply({
-      content: lines.length ? lines.join('\n') : 'No extra grants in this server yet.',
-      flags: MessageFlags.Ephemeral,
-      allowedMentions: { parse: [] },
-    });
+/** Commands a role gets just from the server's built-in rules in config.js (not from /access). */
+function builtInCommandsForRole(guildId, roleId) {
+  const rules = SERVER_RULES[guildId] ?? {};
+  const commands = new Set();
+  if (rules.commandRoles?.includes(roleId)) {
+    for (const c of RESTRICTED_COMMANDS.filter((x) => x !== 'createrun-test')) commands.add(c);
   }
+  if (rules.preferenceRoles?.includes(roleId)) commands.add('setpreference');
+  return commands;
+}
 
-  const command = interaction.options.getString('command', true);
+/** The picker for one role or member: every grantable command, ticked where they already have it. */
+function accessPanel(guildId, kind, id) {
+  const grants = getGuildGrants(guildId);
+  const has = (c) => (kind === 'role' ? grants[c]?.roles : grants[c]?.users)?.includes(id);
+  const builtIn = kind === 'role' ? builtInCommandsForRole(guildId, id) : new Set();
+  const options = GRANTABLE_COMMANDS.map((c) => ({
+    label: `/${c}`,
+    value: c,
+    description: (builtIn.has(c) ? 'Already allowed by the server rules. ' : '') + (COMMAND_BLURBS[c] ?? ''),
+    default: Boolean(has(c)),
+  })).map((o) => ({ ...o, description: o.description.slice(0, 100) }));
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`access:${kind}:${id}`)
+      .setPlaceholder('Pick the commands they can use')
+      .setMinValues(0)
+      .setMaxValues(options.length)
+      .addOptions(options),
+  );
+}
+
+async function handleAccess(interaction) {
+  if (!(await requireAdmin(interaction, 'access'))) return undefined;
+
   const role = interaction.options.getRole('role');
   const member = interaction.options.getUser('member');
-  if (!role && !member) return interaction.reply(ephemeral('Pick a **role** or a **member** to grant/revoke.'));
+  if (!role && !member) return interaction.reply(ephemeral('Pick a **role** or a **member** to set access for.'));
   if (role && member) return interaction.reply(ephemeral('Pick only one: a **role** or a **member**, not both.'));
 
-  if (sub === 'grant') {
-    if (role) grantRole(interaction.guildId, command, role.id);
-    else grantUser(interaction.guildId, command, member.id);
-  } else {
-    if (role) revokeRole(interaction.guildId, command, role.id);
-    else revokeUser(interaction.guildId, command, member.id);
+  const kind = role ? 'role' : 'user';
+  const id = role ? role.id : member.id;
+  return interaction.reply({
+    content: `Choose the commands ${role ? `<@&${id}>` : `<@${id}>`} can use. Your choice saves right away, ` +
+      'and unticking a command removes their access to it.',
+    components: [accessPanel(interaction.guildId, kind, id)],
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handleAccessSelect(interaction, kind, id) {
+  if (!interaction.inGuild() || !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+    return interaction.update({ content: 'Only server administrators can change access.', components: [] });
   }
 
-  const who = role ? `<@&${role.id}>` : `<@${member.id}>`;
-  const verb = sub === 'grant' ? 'can now use' : 'no longer has extra access to';
+  const chosen = new Set(interaction.values);
+  const grants = getGuildGrants(interaction.guildId);
+  const added = [];
+  const removed = [];
+  for (const command of GRANTABLE_COMMANDS) {
+    const had = (kind === 'role' ? grants[command]?.roles : grants[command]?.users)?.includes(id) ?? false;
+    if (chosen.has(command) && !had) {
+      if (kind === 'role') grantRole(interaction.guildId, command, id);
+      else grantUser(interaction.guildId, command, id);
+      added.push(command);
+    } else if (!chosen.has(command) && had) {
+      if (kind === 'role') revokeRole(interaction.guildId, command, id);
+      else revokeUser(interaction.guildId, command, id);
+      removed.push(command);
+    }
+  }
+
+  const who = kind === 'role' ? `<@&${id}>` : `<@${id}>`;
+  const list = (arr) => arr.map((c) => `\`/${c}\``).join(', ');
+  const summary = [
+    added.length ? `✅ Added: ${list(added)}` : null,
+    removed.length ? `➖ Removed: ${list(removed)}` : null,
+    !added.length && !removed.length ? 'No changes.' : null,
+  ].filter(Boolean).join('\n');
+  return interaction.update({
+    content: `Access for ${who} updated.\n${summary}`,
+    components: [accessPanel(interaction.guildId, kind, id)],
+    allowedMentions: { parse: [] },
+  });
+}
+
+async function handlePermissionList(interaction) {
+  if (!(await requireAdmin(interaction, 'permissionlist'))) return undefined;
+
+  const guildId = interaction.guildId;
+  const rules = SERVER_RULES[guildId] ?? {};
+  const grants = getGuildGrants(guildId);
+  const byRole = new Map(); // roleId -> Set of capability labels
+  const byUser = new Map();
+  const add = (map, id, label) => {
+    if (!map.has(id)) map.set(id, new Set());
+    map.get(id).add(label);
+  };
+
+  for (const roleId of rules.commandRoles ?? []) {
+    for (const c of RESTRICTED_COMMANDS.filter((x) => x !== 'createrun-test')) add(byRole, roleId, `/${c}`);
+  }
+  for (const roleId of rules.preferenceRoles ?? []) add(byRole, roleId, '/setpreference');
+  for (const roleId of rules.signupRoles ?? []) add(byRole, roleId, 'sign up for runs');
+  for (const [command, g] of Object.entries(grants)) {
+    for (const roleId of g.roles ?? []) add(byRole, roleId, `/${command}`);
+    for (const userId of g.users ?? []) add(byUser, userId, `/${command}`);
+  }
+
+  const describe = (set) => [...set].sort().join(' ');
+  const lines = [
+    ...[...byRole].map(([roleId, set]) => `<@&${roleId}>: ${describe(set)}`),
+    ...[...byUser].map(([userId, set]) => `<@${userId}> (member): ${describe(set)}`),
+  ];
+
+  const open = ['/help', '/myruns', '/settimezone', '/request'];
+  if (!rules.preferenceRoles?.length) open.push('/setpreference');
+  const everyone = `**Everyone:** ${open.join(' ')}${rules.signupRoles?.length ? '' : ', sign up for runs'}`;
+  const admins = '**Admins:** every command, always.';
+
+  const description = [
+    lines.length ? lines.join('\n') : 'No roles or members have extra access yet.',
+    '', everyone, admins,
+    '', 'Change someone\'s access with `/access`.',
+  ].join('\n').slice(0, 4000);
   return interaction.reply({
-    content: `✅ ${who} ${verb} \`/${command}\`.`,
+    embeds: [{ title: 'Who can use what', description, color: 0x5865f2 }],
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });
@@ -3504,7 +3634,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'settimezone': return await handleSetTimezone(interaction);
         case 'setpreference': return await handleSetPreference(interaction);
         case 'help': return await handleHelp(interaction);
-        case 'permissions': return await handlePermissions(interaction);
+        case 'access': return await handleAccess(interaction);
+        case 'permissionlist': return await handlePermissionList(interaction);
         case 'startprompt': return await handleStartPrompt(interaction);
         case 'fixrun': return await handleFixRun(interaction);
         case 'setlogchannel': return await handleSetLogChannel(interaction);
@@ -3566,6 +3697,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return await handleSelect(interaction, messageId, action);
       }
       if (ns === 'remind' && action === 'select') return await handleReminderSelect(interaction);
+      if (ns === 'access') return await handleAccessSelect(interaction, action, messageId);
       return;
     }
 

@@ -271,7 +271,7 @@ it's submitted.
 - `/startprompt role` optionally also DMs everyone with a role, the same prompt the creator gets
   (nobody extra is DMed by default). The creator only ever gets it once, even if they also have
   that role. If the role can't already use `/createrun`, it's automatically granted access to it
-  (same as `/permissions grant`). This needs the **Server Members Intent** turned on for the bot in
+  (same as granting it in `/access`). This needs the **Server Members Intent** turned on for the bot in
   the [Discord Developer Portal](https://discord.com/developers/applications) (Bot tab) — without
   it, the role option won't find anyone to DM.
 
@@ -294,7 +294,7 @@ A server can limit who creates runs and who signs up. These rules are set in [sr
 
 - `commandRoles`: only members with one of these roles can use `/createrun`, `/createrun-test`,
   `/privaterun`, `/adoptrun`, `/managerun` and `/runs`. **If a server doesn't set this, those
-  commands are admin-only by default** (see `/permissions` below to open them up to others).
+  commands are admin-only by default** (see `/access` below to open them up to others).
 - `signupRoles`: only members with one of these roles can sign up. Anyone can still press Leave.
   Open to everyone if not set.
 - `preferenceRoles`: only members with one of these roles can use `/setpreference`. Open to everyone
@@ -303,10 +303,11 @@ A server can limit who creates runs and who signs up. These rules are set in [sr
 
 Server admins (Administrator permission) can always use every command regardless of these rules.
 
-An admin can also use `/permissions` to grant or revoke `/createrun`, `/privaterun`, `/adoptrun`,
-`/managerun`, `/runs` or `/setpreference` access for a specific role or member, on top of (or
-instead of) `commandRoles` — this is how you let non-admins use those commands without making
-them admins. `/permissions list` shows every extra grant in the server.
+An admin can also use `/access` to pick which commands (`/createrun`, `/privaterun`, `/adoptrun`,
+`/managerun`, `/runs`, `/removeadoptedrun` or `/setpreference`) a specific role or member can use: choose the
+role or member, then tick the commands in the menu. It saves right away, and unticking removes access. This is
+on top of (or instead of) `commandRoles`, so it's how you let non-admins use those commands without making
+them admins. `/permissionlist` shows which roles and members can use which commands.
 
 ## Commands
 
@@ -323,7 +324,8 @@ them admins. `/permissions list` shows every extra grant in the server.
 | `/settimezone` | Save or change your timezone |
 | `/setpreference` | Save your usual roles and jobs so Sign up is filled in for you, and choose when you get DM reminders |
 | `/help` | How to sign up for runs and which commands you can use in this server |
-| `/permissions` | Admins only: grant or revoke a role/member's access to restricted commands |
+| `/access` | Admins only: pick a role or member, then tick which restricted commands they can use |
+| `/permissionlist` | Admins only: show which roles and members can use which commands |
 | `/startprompt` | Admins only: turn the run-starting DM on/off, and optionally assign a role to ping |
 | `/fixrun` | Admins only: scan every run (or just one, with `run_id`) and repost a missing roster copy in its private channel |
 | `/setlogchannel` | Admins only: set or clear the channel roster activity gets logged to |
