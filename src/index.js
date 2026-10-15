@@ -77,6 +77,7 @@ import {
 } from './permissions.js';
 import { getStartPromptSettings, setStartPromptEnabled, setStartPromptRole } from './startPrompt.js';
 import { getLogChannel, setLogChannel } from './logChannels.js';
+import { addLogEntry, setLogMessage } from './runLogs.js';
 import { getMinAmount, getRequest, parseAmount, setMinAmount, setRequest } from './requests.js';
 
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
@@ -564,6 +565,7 @@ const showsRunId = (run) => run.showId ?? Boolean(run.runId);
 function statusText(run) {
   if (run.status === 'completed') return 'Completed';
   if (run.status === 'failed') return 'Failed';
+  if (run.status === 'deleted') return 'Deleted';
   return run.rescheduled ? 'Open (rescheduled)' : 'Open';
 }
 
@@ -609,21 +611,65 @@ function isActiveRosterMember(run, userId) {
   return ROLES.some((r) => result.slots[r]?.userId === userId);
 }
 
+const EMBED_DESCRIPTION_BUDGET = 3800; // Discord allows 4096; leave room for the header and marker
+const LOG_ENTRY_MAX = 300;
+const logQueues = new Map();
+
+/** The run's single log message: a short header, the first entry, then as many recent entries as fit. */
+function runLogEmbed(run, entries) {
+  const header = [
+    `**Status:** ${statusText(run)}`,
+    run.startsAt ? `**Starts:** <t:${run.startsAt}:f>` : null,
+    run.creatorId ? `**Created by:** <@${run.creatorId}>` : null,
+  ].filter(Boolean).join(' · ');
+
+  const lines = entries.map((e) => `<t:${e.ts}:d> <t:${e.ts}:t> ${e.text.slice(0, LOG_ENTRY_MAX)}`);
+  const first = lines[0];
+  let budget = EMBED_DESCRIPTION_BUDGET - header.length - (first?.length ?? 0) - 60;
+  const recent = [];
+  for (let i = lines.length - 1; i >= 1; i--) {
+    if (lines[i].length + 1 > budget) break;
+    budget -= lines[i].length + 1;
+    recent.unshift(lines[i]);
+  }
+  const hidden = Math.max(0, lines.length - 1 - recent.length);
+
+  const description = [header, '', first, hidden ? `*… ${hidden} earlier entries*` : null, ...recent]
+    .filter((l) => l !== null && l !== undefined).join('\n');
+  const color = run.status === 'completed' ? 0x57f287 : run.status === 'failed' ? 0xed4245 : 0x5865f2;
+  return { title: `Run ${run.runId} · ${run.title ?? 'Run'}`.slice(0, 256), description, color };
+}
+
 /**
- * Posts a single-line entry to this server's log channel (if one is set via /setlogchannel) for
- * roster activity — signing up, leaving, or changing a pick. Never throws, and does nothing at all
- * if no log channel is configured, so it never adds noise for servers that don't want it.
+ * Adds an entry to the run's log message in this server's log channel (set via /setlogchannel),
+ * creating that message the first time and editing the same one after that. Never throws, and does
+ * nothing if no log channel is configured. Edits for a run are queued so they never overlap.
  */
-async function logActivity(guildId, text) {
-  const channelId = getLogChannel(guildId);
-  if (!channelId) return;
-  try {
+function logRun(run, text) {
+  if (!run?.runId || !run.guildId) return Promise.resolve();
+  const channelId = getLogChannel(run.guildId);
+  if (!channelId) return Promise.resolve();
+
+  const previous = logQueues.get(run.runId) ?? Promise.resolve();
+  const next = previous.then(async () => {
+    const log = addLogEntry(run.runId, run.guildId, text);
     const channel = await client.channels.fetch(channelId).catch(() => null);
     if (!channel) return;
-    await channel.send({ content: text, allowedMentions: { parse: [] } });
-  } catch (err) {
-    console.error(`Couldn't post to the log channel for guild ${guildId}:`, err.message);
-  }
+    const payload = { embeds: [runLogEmbed(run, log.entries)], allowedMentions: { parse: [] } };
+
+    // Edit the existing message, unless the log channel changed or the message was deleted.
+    if (log.messageId && log.channelId === channelId) {
+      const edited = await channel.messages.edit(log.messageId, payload).then(() => true, () => false);
+      if (edited) return;
+    }
+    const sent = await channel.send(payload);
+    setLogMessage(run.runId, channelId, sent.id);
+  }).catch((err) => console.error(`Couldn't update the log for run ${run.runId}:`, err.message))
+    .finally(() => {
+      if (logQueues.get(run.runId) === next) logQueues.delete(run.runId);
+    });
+  logQueues.set(run.runId, next);
+  return next;
 }
 
 /**
@@ -1536,10 +1582,9 @@ async function finishCreateRun(interaction, ctx, extras) {
       "(check my Manage Roles / Manage Channels permissions and that I can see the category). I'll keep retrying every minute.";
   }
   await interaction.editReply({ content: done, allowedMentions: { parse: [] } });
-  const kind = privateOnly ? 'private run' : 'run';
-  await logActivity(run.guildId,
-    `🆕 ${interaction.user} created ${kind} **${run.runId} · ${run.title}** for ${cleareeName} ` +
-    `(starts <t:${run.startsAt}:f>)${ctx.requestedBy ? ` from <@${ctx.requestedBy}>'s request` : ''} in <#${privateChannel.id}>.`);
+  await logRun(run,
+    `🆕 ${interaction.user} created this ${privateOnly ? 'private run' : 'run'} for ${cleareeName} in ` +
+    `<#${privateChannel.id}>${ctx.requestedBy ? ` from <@${ctx.requestedBy}>'s request` : ''}.`);
 }
 
 async function handleSetTimezone(interaction) {
@@ -2402,8 +2447,7 @@ async function handleAdoptRun(interaction) {
 
   setRun(newPost.id, run);
   await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
-  await logActivity(run.guildId,
-    `📎 ${interaction.user} adopted an existing run as **${runId}** in <#${privateChannel.id}>.`);
+  await logRun(run, `📎 ${interaction.user} adopted an existing run in <#${privateChannel.id}>.`);
   // Buttonless runs have no separate private channel to grant access to (addToPrivateChannel already
   // no-ops for them too, but skipping the loop avoids a pointless fetch per sign-up here).
   if (!sameChannel) {
@@ -2615,9 +2659,9 @@ async function closeRun(interaction, messageId, status) {
       reply = `Run **${run.runId}** marked as failed. Sign-ups are closed until it's rescheduled.`;
     }
     if (!postId) reply += "\n(The run post was deleted and a fresh copy couldn't be posted — only the saved record was updated.)";
-    await logActivity(run.guildId, status === 'completed'
-      ? `✅ ${interaction.user} marked **${run.runId} · ${run.title}** as completed.`
-      : `⚠️ ${interaction.user} marked **${run.runId} · ${run.title}** as failed.`);
+    await logRun(run, status === 'completed'
+      ? `✅ ${interaction.user} marked it completed.`
+      : `⚠️ ${interaction.user} marked it failed.`);
     return interaction.editReply({ content: reply, components: [] });
   });
 }
@@ -2638,7 +2682,7 @@ async function deleteWholeRun(interaction, messageId) {
     await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
 
     // If /managerun was used inside the private channel, that channel is gone now, so this can fail.
-    await logActivity(run.guildId, `🗑️ ${interaction.user} deleted **${run.runId} · ${run.title}**.`);
+    await logRun({ ...run, status: 'deleted' }, `🗑️ ${interaction.user} deleted the run.`);
     return interaction.editReply({ content: `Run **${run.runId}** deleted.`, components: [] }).catch(() => {});
   });
 }
@@ -2721,8 +2765,7 @@ async function handleRescheduleSubmit(interaction, messageId) {
     let reply = `Run **${run.runId}** rescheduled to <t:${parsed.ts}:F>. Sign-ups are open again.`;
     if (!run.privateChannelId) reply += '\n(Its private channel was already deleted.)';
     if (!repostId && !postId) reply += "\n(The run post was deleted and a fresh copy couldn't be posted — only the saved record was updated.)";
-    await logActivity(run.guildId,
-      `🕒 ${interaction.user} rescheduled **${run.runId} · ${run.title}** to <t:${parsed.ts}:f>.`);
+    await logRun(run, `🕒 ${interaction.user} rescheduled it to <t:${parsed.ts}:f>.`);
     return interaction.editReply({ content: reply, components: [] });
   });
 }
@@ -2785,6 +2828,7 @@ async function handleDetailsSubmit(interaction, messageId) {
     }
 
     let reply = `Run **${run.runId}** updated.`;
+    await logRun(run, `✏️ ${interaction.user} edited the details${parsed ? ` (new time <t:${parsed.ts}:f>)` : ''}.`);
     if (parsed) reply += ` New time: <t:${parsed.ts}:F>.`;
     if (!postId) reply += "\n(The run post was deleted and a fresh copy couldn't be posted — only the saved record was updated.)";
     return interaction.editReply({ content: reply, components: [] });
@@ -3072,9 +3116,9 @@ async function handleConfirm(interaction, messageId, encodedValues, encodedJobs)
     });
     await syncRosterCopy(messageId, updated, rendered.content);
     if (isNew) await addToPrivateChannel(updated, userId);
-    await logActivity(updated.guildId, isNew
-      ? `✅ <@${userId}> signed up for **${updated.runId} · ${updated.title}** as **${describeSignup(signup)}**.`
-      : `✏️ <@${userId}> changed their pick for **${updated.runId} · ${updated.title}** to **${describeSignup(signup)}**.`);
+    await logRun(updated, isNew
+      ? `✅ <@${userId}> signed up as **${describeSignup(signup)}**.`
+      : `✏️ <@${userId}> changed their pick to **${describeSignup(signup)}**.`);
   });
 }
 
@@ -3096,8 +3140,7 @@ async function handleLeave(interaction) {
     await interaction.followUp(ephemeral(`Removed you from the run (you were **${describeSignup(mine)}**).`));
     await syncRosterCopy(post.id, updated, rendered.content);
     await removeFromPrivateChannel(updated, interaction.user.id);
-    await logActivity(updated.guildId,
-      `❌ <@${interaction.user.id}> left **${updated.runId} · ${updated.title}** (was **${describeSignup(mine)}**).`);
+    await logRun(updated, `❌ <@${interaction.user.id}> left (was **${describeSignup(mine)}**).`);
   });
 }
 
@@ -3250,8 +3293,8 @@ async function handleEditConfirm(interaction, messageId, userId, encodedValues, 
     await syncActiveRosterRole(run.guildId, interaction.guild, signups.map((s) => s.userId));
     if (isNew && isUserId(userId)) await addToPrivateChannel(run, userId);
     const who = labelsFor(run)[userId] ?? `<@${userId}>`;
-    await logActivity(run.guildId, `${isNew ? '✅' : '✏️'} ${interaction.user} ${isNew ? 'added' : 'updated'} ` +
-      `${who} on **${run.runId} · ${run.title}** as **${describeSignup(signup)}** via Edit roster.`);
+    await logRun(run, `${isNew ? '✅' : '✏️'} ${interaction.user} ${isNew ? 'added' : 'updated'} ` +
+      `${who} as **${describeSignup(signup)}** via Edit roster.`);
     return interaction.editReply(await editPanel(interaction, finalId, run,
       outcomeText(signup, rendered, false, who)));
   });
@@ -3280,8 +3323,7 @@ async function handleEditRemove(interaction, messageId) {
 
     const labels = labelsFor(run);
     const names = removed.map((s) => labels[s.userId] ?? `<@${s.userId}>`).join(', ');
-    await logActivity(run.guildId,
-      `❌ ${interaction.user} removed ${names} from **${run.runId} · ${run.title}** via Edit roster.`);
+    await logRun(run, `❌ ${interaction.user} removed ${names} via Edit roster.`);
     return interaction.editReply(await editPanel(interaction, finalId, run, `✅ Removed ${names}.`));
   });
 }
