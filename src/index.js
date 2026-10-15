@@ -560,6 +560,11 @@ function statusText(run) {
   return run.rescheduled ? 'Open (rescheduled)' : 'Open';
 }
 
+/** Start time as shown on run posts: full date with the weekday, then a live "in 3 days" countdown. */
+const startStamp = (ts) => `<t:${ts}:F> (<t:${ts}:R>)`;
+// Matches an existing time in a header, including the countdown that follows it.
+const START_STAMP_RE = /<t:-?\d+(?::[tTdDfFR])?>(?: \(<t:-?\d+:R>\))?/;
+
 /** Header shown at the top of the post: the ping, then (for test runs) the Merc Run ID, then the run. */
 function displayHeader(run) {
   const label = STATUS_LABEL[run.status] ?? (run.rescheduled ? 'Rescheduled' : '');
@@ -1457,7 +1462,7 @@ async function finishCreateRun(interaction, ctx, extras) {
 
   const who = [cleareeLabel(cleareeShown, jobs, role), ...extraInfo.map((e) => cleareeLabel(e.shown, e.jobs, e.role))]
     .join(' & ');
-  const header = `${amount} ${text} for ${who} @ <t:${parsed.ts}:f>`;
+  const header = `${amount} ${text} for ${who} @ ${startStamp(parsed.ts)}`;
   const ping = noPing ? { text: null, allowedMentions: { parse: [] }, roleId: null } : pingFor(interaction.guildId);
   const run = {
     header,
@@ -2874,9 +2879,9 @@ async function handleRescheduleSubmit(interaction, messageId) {
     const run = getRun(messageId);
     if (!run) return interaction.editReply({ content: 'That run no longer exists.', components: [] });
 
-    const stamp = `<t:${parsed.ts}:f>`;
-    run.header = /<t:-?\d+(?::[tTdDfFR])?>/.test(run.header)
-      ? run.header.replace(/<t:-?\d+(?::[tTdDfFR])?>/, stamp)
+    const stamp = startStamp(parsed.ts);
+    run.header = START_STAMP_RE.test(run.header)
+      ? run.header.replace(START_STAMP_RE, stamp)
       : `${run.header} ${stamp}`;
     run.startsAt = parsed.ts;
     run.status = 'open';
@@ -2933,9 +2938,9 @@ async function handleDetailsSubmit(interaction, messageId) {
     let newHeader = `${newTitle}${run.header.slice(oldTitle.length)}`;
 
     if (parsed) {
-      const stamp = `<t:${parsed.ts}:f>`;
-      newHeader = /<t:-?\d+(?::[tTdDfFR])?>/.test(newHeader)
-        ? newHeader.replace(/<t:-?\d+(?::[tTdDfFR])?>/, stamp)
+      const stamp = startStamp(parsed.ts);
+      newHeader = START_STAMP_RE.test(newHeader)
+        ? newHeader.replace(START_STAMP_RE, stamp)
         : `${newHeader} ${stamp}`;
       run.startsAt = parsed.ts;
       run.rolePingSent = false;
@@ -3583,12 +3588,41 @@ async function registerCommands(c) {
   }
 }
 
+/**
+ * One-time upgrade of runs posted before the start time showed the weekday and a countdown. Finds
+ * active runs whose header still has the old plain time and rewrites it. Safe to run on every
+ * startup: a run already in the new format is skipped, so once everything is upgraded it's a no-op.
+ * Never reposts a missing post (that would be a surprise at startup), it just leaves that run alone.
+ */
+async function upgradeStartStamps() {
+  for (const [messageId, run] of allRuns()) {
+    if (run.status === 'completed' || !run.header) continue;
+    const old = run.header.match(/<t:(-?\d+):f>(?! \(<t:-?\d+:R>\))/);
+    if (!old) continue;
+
+    await withLock(messageId, async () => {
+      const current = getRun(messageId);
+      if (!current || !/<t:-?\d+:f>(?! \(<t:-?\d+:R>\))/.test(current.header)) return;
+
+      const channel = await client.channels.fetch(current.channelId).catch(() => null);
+      const post = channel && (await channel.messages.fetch(messageId).catch(() => null));
+      if (!post) return;
+
+      current.header = current.header.replace(START_STAMP_RE, startStamp(Number(old[1])));
+      await updatePost(messageId, current);
+      setRun(messageId, current);
+      console.log(`Upgraded the time display on run ${current.runId}.`);
+    }).catch((err) => console.error(`Couldn't upgrade the time display on run ${run.runId}:`, err.message));
+  }
+}
+
 client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}. In ${c.guilds.cache.size} server(s).`);
   await registerCommands(c);
   await confirmBotUpdate();
   await sweepChannels();
   await pruneRuns();
+  await upgradeStartStamps();
   await sweepReminders();
   setInterval(sweepChannels, 60 * 1000);
   setInterval(() => sweepReminders().catch((err) => console.error('sweepReminders failed:', err.message)), 60 * 1000);
