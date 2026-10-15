@@ -1536,6 +1536,10 @@ async function finishCreateRun(interaction, ctx, extras) {
       "(check my Manage Roles / Manage Channels permissions and that I can see the category). I'll keep retrying every minute.";
   }
   await interaction.editReply({ content: done, allowedMentions: { parse: [] } });
+  const kind = privateOnly ? 'private run' : 'run';
+  await logActivity(run.guildId,
+    `🆕 ${interaction.user} created ${kind} **${run.runId} · ${run.title}** for ${cleareeName} ` +
+    `(starts <t:${run.startsAt}:f>)${ctx.requestedBy ? ` from <@${ctx.requestedBy}>'s request` : ''} in <#${privateChannel.id}>.`);
 }
 
 async function handleSetTimezone(interaction) {
@@ -1951,6 +1955,7 @@ async function approveRequest(interaction) {
       test: false,
       noPing: false,
       requiredChannelId: null,
+      requestedBy: req.userId,
     };
     await finishCreateRun(asCreate, ctx, req.extras ?? []);
 
@@ -2397,6 +2402,8 @@ async function handleAdoptRun(interaction) {
 
   setRun(newPost.id, run);
   await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
+  await logActivity(run.guildId,
+    `📎 ${interaction.user} adopted an existing run as **${runId}** in <#${privateChannel.id}>.`);
   // Buttonless runs have no separate private channel to grant access to (addToPrivateChannel already
   // no-ops for them too, but skipping the loop avoids a pointless fetch per sign-up here).
   if (!sameChannel) {
@@ -2631,6 +2638,7 @@ async function deleteWholeRun(interaction, messageId) {
     await syncActiveRosterRole(run.guildId, interaction.guild, run.signups.map((s) => s.userId));
 
     // If /managerun was used inside the private channel, that channel is gone now, so this can fail.
+    await logActivity(run.guildId, `🗑️ ${interaction.user} deleted **${run.runId} · ${run.title}**.`);
     return interaction.editReply({ content: `Run **${run.runId}** deleted.`, components: [] }).catch(() => {});
   });
 }
@@ -2713,6 +2721,8 @@ async function handleRescheduleSubmit(interaction, messageId) {
     let reply = `Run **${run.runId}** rescheduled to <t:${parsed.ts}:F>. Sign-ups are open again.`;
     if (!run.privateChannelId) reply += '\n(Its private channel was already deleted.)';
     if (!repostId && !postId) reply += "\n(The run post was deleted and a fresh copy couldn't be posted — only the saved record was updated.)";
+    await logActivity(run.guildId,
+      `🕒 ${interaction.user} rescheduled **${run.runId} · ${run.title}** to <t:${parsed.ts}:f>.`);
     return interaction.editReply({ content: reply, components: [] });
   });
 }
