@@ -59,8 +59,10 @@ That roster is the only message the bot posts in the channel. Nobody is @mention
 - **job** is the clearee's job for that role, picked from the list as you type. Add more than one with
   `/`, like `NIN/SAM`. It's **required** (see the job list under [Signing up](#signing-up)).
 - **extra_clearees** (optional) is a number (1-5) of additional clearees to add to the roster. After you
-  submit the command, a form pops up with one line per extra clearee — type each as `Name, Role, Job(s)`,
-  e.g. `Alex, H1, WHM` (job is only required for MT/OT/M1/M2). No two clearees can share a role. The post
+  submit the command, a small form pops up for each extra clearee, one at a time (press the button to open
+  the next one). In each form, pick the person from the server's member list, or type a name if they're not
+  in the server, then enter their role and job(s), e.g. `H1, WHM` (job is only required for MT/OT/M1/M2).
+  No two clearees can share a role. The post
   then reads like `5m M4S clear for Steph (NIN/SAM) - M1 & Alex (WHM) - H1 @ Sunday, September 28, 2026 4:00 PM`.
   Any extra clearee matching a server member who can see the channel the run is posted in is `@mentioned`
   (and pinged) instead of named; either way, a matching member is added to the private channel.

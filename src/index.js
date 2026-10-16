@@ -10,6 +10,7 @@ import {
   Client,
   Events,
   GatewayIntentBits,
+  LabelBuilder,
   MessageFlags,
   ModalBuilder,
   OverwriteType,
@@ -1294,36 +1295,147 @@ async function resolveClearee(guild, input, fallbackKey) {
 
 const cleareeLabel = (name, jobs, role) => `${name} ` + (jobs.length ? `(${jobs.join('/')}) - ${role}` : role);
 
-// Pending /createrun submissions waiting on the "extra clearees" modal, keyed by a token embedded in
-// the modal's customId (modals can't carry the original options directly). Cleared once submitted, or
-// after a few minutes if the form is never filled in.
-const pendingCreateRuns = new Map();
-const PENDING_CREATE_RUN_TTL_MS = 10 * 60 * 1000;
+// ---------------------------------------------------------------------------
+// Extra clearees (shared by /createrun and /request)
+// ---------------------------------------------------------------------------
+// Each extra clearee is its own small form: pick them from the server's member list (or type a name
+// for someone who isn't in the server), then their role and job(s). Forms are chained with a button,
+// since a modal can only be opened in response to an interaction. Progress is held here under a token
+// carried in the customIds, and dropped if the person never finishes.
+const pendingExtras = new Map();
+const PENDING_EXTRAS_TTL_MS = 10 * 60 * 1000;
+const MAX_REQUEST_EXTRAS = 3;
 
-function stashCreateRunContext(ctx) {
+/**
+ * @param {{ kind: 'createrun'|'request', ctx?: object, req?: object, mainRole: string,
+ *   extras: { name: string, role: string, jobs: string[] }[], total: number, flexible: boolean }} state
+ *   `flexible`: the person can stop early with a Done button (/request); otherwise the form repeats
+ *   until `total` extras are filled in (/createrun, where the count was chosen up front).
+ */
+function stashExtras(state) {
   const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-  pendingCreateRuns.set(token, ctx);
-  setTimeout(() => pendingCreateRuns.delete(token), PENDING_CREATE_RUN_TTL_MS).unref?.();
+  pendingExtras.set(token, state);
+  setTimeout(() => pendingExtras.delete(token), PENDING_EXTRAS_TTL_MS).unref?.();
   return token;
 }
 
-/** One text input per extra clearee: "Name, Role, Job(s)" in a single line, since modals are plain text only. */
-function extraCleareesModal(token, count) {
-  const modal = new ModalBuilder().setCustomId(`createrun:extra-submit:${token}`).setTitle('Extra clearees');
-  for (let i = 1; i <= count; i++) {
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId(`extra${i}`)
-          .setLabel(`Extra clearee ${i}: name, role, job(s)`)
-          .setPlaceholder('e.g. Alex, H1, WHM')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-          .setMaxLength(100),
-      ),
+function extraClearModal(token, index, total) {
+  return new ModalBuilder()
+    .setCustomId(`xc:submit:${token}`)
+    .setTitle(`Extra clearee ${index}${total ? ` of ${total}` : ''}`)
+    .addLabelComponents(
+      new LabelBuilder()
+        .setLabel('Pick from the server list')
+        .setUserSelectMenuComponent(
+          new UserSelectMenuBuilder()
+            .setCustomId('user')
+            .setPlaceholder('Search for a member')
+            .setRequired(false)
+            .setMinValues(0)
+            .setMaxValues(1),
+        ),
+      new LabelBuilder()
+        .setLabel('Or type a name (not in the server)')
+        .setTextInputComponent(
+          new TextInputBuilder().setCustomId('name').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(100),
+        ),
+      new LabelBuilder()
+        .setLabel('Role and job(s)')
+        .setTextInputComponent(
+          new TextInputBuilder()
+            .setCustomId('rolejob')
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('e.g. H1, WHM')
+            .setRequired(true)
+            .setMaxLength(100),
+        ),
     );
+}
+
+/** Validates one extra-clearee form. Returns { extra } or { error }. */
+function readExtraClearee(interaction, usedRoles) {
+  const picked = interaction.fields.getSelectedUsers('user')?.first();
+  if (picked?.bot) return { error: "Bots can't be clearees." };
+  // A picked member is stored as a mention, which resolves straight to that member (no name matching).
+  const name = picked ? `<@${picked.id}>` : noMassPing(interaction.fields.getTextInputValue('name').trim());
+  if (!name) return { error: 'Pick a member from the list, or type a name.' };
+
+  const [roleRaw, ...jobTokens] = interaction.fields.getTextInputValue('rolejob').trim().split(/[\s,/]+/).filter(Boolean);
+  const role = roleRaw?.toUpperCase();
+  if (!ROLES.includes(role)) {
+    return { error: `Start with a role (${ROLES.join('/')}) then their job(s), e.g. "H1, WHM".` };
   }
-  return modal;
+  if (usedRoles.has(role)) return { error: `Two clearees can't both have the **${role}** slot.` };
+  const check = checkJobInput(role, jobTokens.join('/'), 'job', missingJobs([role], []).length > 0);
+  if (check.error) return { error: check.error };
+  return { extra: { name, role, jobs: check.jobs } };
+}
+
+const extraLine = (e) => `${e.name} - ${e.role}${e.jobs.length ? ` (${e.jobs.join('/')})` : ''}`;
+
+function extraPrompt(token, state, content) {
+  const row = new ActionRowBuilder();
+  if (state.extras.length < state.total) {
+    row.addComponents(new ButtonBuilder().setCustomId(`xc:next:${token}`)
+      .setLabel(`Add extra clearee ${state.extras.length + 1}`).setStyle(ButtonStyle.Primary));
+  }
+  if (state.flexible && state.extras.length > 0) {
+    row.addComponents(new ButtonBuilder().setCustomId(`xc:done:${token}`).setLabel('Done').setStyle(ButtonStyle.Success));
+  }
+  return { content, components: row.components.length ? [row] : [], allowedMentions: { parse: [] } };
+}
+
+async function handleExtraSubmit(interaction, token) {
+  const state = pendingExtras.get(token);
+  const respond = (payload) => (interaction.isFromMessage()
+    ? interaction.update(payload)
+    : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral }));
+  if (!state) return respond({ content: 'That took too long. Start again.', components: [] });
+
+  const used = new Set([state.mainRole, ...state.extras.map((e) => e.role)]);
+  const read = readExtraClearee(interaction, used);
+  if (read.error) {
+    // Same button reopens the same form, so a typo doesn't lose the clearees already entered.
+    return respond({
+      content: `⚠️ ${read.error}`,
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId(`xc:next:${token}`).setLabel('Try again').setStyle(ButtonStyle.Primary),
+      )],
+    });
+  }
+
+  state.extras.push(read.extra);
+  if (state.extras.length >= state.total) return finishExtras(interaction, token, state, interaction.isFromMessage());
+  return respond(extraPrompt(token, state, `✅ Saved extra clearee ${state.extras.length}: ${extraLine(read.extra)}.`));
+}
+
+async function handleExtraButton(interaction, action, token) {
+  const state = pendingExtras.get(token);
+  if (!state) return interaction.update({ content: 'That took too long. Start again.', components: [] });
+  if (action === 'next') {
+    return interaction.showModal(extraClearModal(token, state.extras.length + 1, state.flexible ? null : state.total));
+  }
+  if (action === 'done') return finishExtras(interaction, token, state, true);
+  return undefined;
+}
+
+/** All extra clearees are in: hand over to the command that started this. */
+async function finishExtras(interaction, token, state, fromMessage) {
+  pendingExtras.delete(token);
+  if (state.kind === 'request') {
+    const message = await submitRequest(state.req, state.extras);
+    return fromMessage
+      ? interaction.update({ content: message, components: [] })
+      : interaction.reply(ephemeral(message));
+  }
+
+  if (fromMessage) {
+    await interaction.deferUpdate();
+    await interaction.editReply({ content: 'Creating the run…', components: [] });
+  } else {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
+  return finishCreateRun(interaction, state.ctx, state.extras);
 }
 
 async function handleCreateRun(interaction, { test = false, noPing = false, requiredChannelId = null } = {}) {
@@ -1372,45 +1484,14 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   // A modal must be the interaction's first response, so this can't be deferred first — the heavier
   // work (resolving clearees, creating the channel, posting) happens once the form comes back.
   if (extraCount > 0) {
-    const token = stashCreateRunContext(ctx);
-    return interaction.showModal(extraCleareesModal(token, extraCount));
+    const token = stashExtras({ kind: 'createrun', ctx, mainRole: role, extras: [], total: extraCount, flexible: false });
+    return interaction.showModal(extraClearModal(token, 1, extraCount));
   }
 
   // Reply privately to the creator. The run itself is sent as a normal message so the ping
   // notifies people (mentions added by editing a message don't).
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   return finishCreateRun(interaction, ctx, []);
-}
-
-async function handleCreateRunExtraSubmit(interaction, token) {
-  const ctx = pendingCreateRuns.get(token);
-  pendingCreateRuns.delete(token);
-  if (!ctx) return interaction.reply(ephemeral('That took too long — run `/createrun` again.'));
-
-  const extras = [];
-  const usedRoles = new Set([ctx.role]);
-  let i = 0;
-  for (const field of interaction.fields.fields.values()) {
-    i++;
-    const [nameRaw, roleRaw, jobRaw = ''] = field.value.split(',').map((s) => s.trim());
-    if (!nameRaw || !roleRaw) {
-      return interaction.reply(ephemeral(`Extra clearee ${i} needs at least a name and a role, e.g. "Alex, H1, WHM".`));
-    }
-    const extraRole = roleRaw.toUpperCase();
-    if (!ROLES.includes(extraRole)) {
-      return interaction.reply(ephemeral(`"${roleRaw}" isn't a role for extra clearee ${i}. Pick from ${ROLES.join('/')}.`));
-    }
-    if (usedRoles.has(extraRole)) {
-      return interaction.reply(ephemeral(`Two clearees can't both have the **${extraRole}** slot.`));
-    }
-    usedRoles.add(extraRole);
-    const check = checkJobInput(extraRole, jobRaw, `extra clearee ${i} job`, missingJobs([extraRole], []).length > 0);
-    if (check.error) return interaction.reply(ephemeral(check.error));
-    extras.push({ name: noMassPing(nameRaw), role: extraRole, jobs: check.jobs });
-  }
-
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  return finishCreateRun(interaction, ctx, extras);
 }
 
 /**
@@ -1873,49 +1954,6 @@ function requestModal() {
     );
 }
 
-// Requests waiting on the second step (extra clearees + notes), keyed by a token in the buttons' and
-// modal's customId. Expires if the requester never finishes.
-const pendingRequests = new Map();
-const PENDING_REQUEST_TTL_MS = 10 * 60 * 1000;
-const MAX_REQUEST_EXTRAS = 3;
-
-function stashRequest(req) {
-  const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-  pendingRequests.set(token, req);
-  setTimeout(() => pendingRequests.delete(token), PENDING_REQUEST_TTL_MS).unref?.();
-  return token;
-}
-
-/** Second step: up to 3 extra clearees (one "Name, Role, Job(s)" line each), then notes. */
-function requestExtrasModal(token, withExtras, note = null) {
-  const modal = new ModalBuilder().setCustomId(`request:final:${token}:${withExtras ? 'yes' : 'no'}`)
-    .setTitle(withExtras ? 'Extra clearees and notes' : 'Notes');
-  if (withExtras) {
-    for (let i = 1; i <= MAX_REQUEST_EXTRAS; i++) {
-      modal.addComponents(new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId(`extra${i}`)
-          .setLabel(i === 1 ? 'Extra clearee 1: name, role, job(s)' : `Extra clearee ${i} (optional)`)
-          .setPlaceholder('e.g. Alex, H1, WHM')
-          .setStyle(TextInputStyle.Short)
-          .setRequired(i === 1)
-          .setMaxLength(100),
-      ));
-    }
-  }
-  const notesInput = new TextInputBuilder()
-    .setCustomId('notes')
-    .setLabel('Notes (optional)')
-    .setPlaceholder('e.g. no echo, prog from P4')
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setMaxLength(300);
-  // Carries over whatever was typed in the first form.
-  if (note) notesInput.setValue(note);
-  modal.addComponents(new ActionRowBuilder().addComponents(notesInput));
-  return modal;
-}
-
 function requestContent(req, statusLine) {
   const jobs = req.jobs.length ? ` (${req.jobs.join('/')})` : '';
   return [
@@ -1996,7 +2034,9 @@ async function handleRequestSubmit(interaction) {
     zone,
     status: 'pending',
   };
-  const token = stashRequest(req);
+  const token = stashExtras({
+    kind: 'request', req, mainRole: role, extras: [], total: MAX_REQUEST_EXTRAS, flexible: true,
+  });
   return interaction.reply({
     content: 'Will there be extra clearees on this run? (up to 3)',
     components: [new ActionRowBuilder().addComponents(
@@ -2008,47 +2048,18 @@ async function handleRequestSubmit(interaction) {
 }
 
 async function handleRequestExtrasButton(interaction, action, token) {
-  const req = pendingRequests.get(token);
-  if (!req) return interaction.update({ content: 'That took too long. Run `/request` again.', components: [] });
-  return interaction.showModal(requestExtrasModal(token, action === 'yes', req.note));
+  const state = pendingExtras.get(token);
+  if (!state) return interaction.update({ content: 'That took too long. Run `/request` again.', components: [] });
+  if (action === 'yes') return interaction.showModal(extraClearModal(token, 1, null));
+  return finishExtras(interaction, token, state, true);
 }
 
-async function handleRequestFinal(interaction) {
-  const [, , token, answer] = interaction.customId.split(':');
-  const req = pendingRequests.get(token);
-  if (!req) return interaction.reply(ephemeral('That took too long. Run `/request` again.'));
-
-  const extras = [];
-  if (answer === 'yes') {
-    const usedRoles = new Set([req.role]);
-    for (let i = 1; i <= MAX_REQUEST_EXTRAS; i++) {
-      const value = interaction.fields.getTextInputValue(`extra${i}`).trim();
-      if (!value) continue;
-      const [nameRaw, roleRaw, jobRaw = ''] = value.split(',').map((s) => s.trim());
-      if (!nameRaw || !roleRaw) {
-        return interaction.reply(ephemeral(`Extra clearee ${i} needs at least a name and a role, e.g. "Alex, H1, WHM".`));
-      }
-      const extraRole = roleRaw.toUpperCase();
-      if (!ROLES.includes(extraRole)) {
-        return interaction.reply(ephemeral(`"${roleRaw}" isn't a role for extra clearee ${i}. Pick from ${ROLES.join('/')}.`));
-      }
-      if (usedRoles.has(extraRole)) {
-        return interaction.reply(ephemeral(`Two clearees can't both have the **${extraRole}** slot.`));
-      }
-      usedRoles.add(extraRole);
-      const check = checkJobInput(extraRole, jobRaw, `extra clearee ${i} job`, missingJobs([extraRole], []).length > 0);
-      if (check.error) return interaction.reply(ephemeral(check.error));
-      extras.push({ name: noMassPing(nameRaw), role: extraRole, jobs: check.jobs });
-    }
-  }
-  const noteInput = interaction.fields.getTextInputValue('notes').trim();
-
+/** Posts a finished request in the requests channel. Returns the message to show the requester. */
+async function submitRequest(req, extras) {
   const channel = await client.channels.fetch(REQUEST_CHANNEL[req.guildId]).catch(() => null);
-  if (!channel) {
-    return interaction.reply(ephemeral("I can't reach the requests channel right now. Let an admin know."));
-  }
+  if (!channel) return "I can't reach the requests channel right now. Let an admin know.";
 
-  const full = { ...req, extras, note: noteInput ? noMassPing(noteInput) : null };
+  const full = { ...req, extras };
   const post = await channel.send({
     content: requestContent(full, '⏳ Waiting for an overseer or admin.'),
     components: [requestButtons()],
@@ -2057,14 +2068,10 @@ async function handleRequestFinal(interaction) {
     console.error('Couldn\'t post a run request:', err.message);
     return null;
   });
-  if (!post) return interaction.reply(ephemeral("Couldn't submit your request. Let an admin know."));
+  if (!post) return "Couldn't submit your request. Let an admin know.";
 
-  pendingRequests.delete(token);
   setRequest(post.id, full);
-  const done = '✅ Your run request has been submitted.';
-  return interaction.isFromMessage()
-    ? interaction.update({ content: done, components: [] })
-    : interaction.reply(ephemeral(done));
+  return '✅ Your run request has been submitted.';
 }
 
 async function handleRequestButton(interaction, action) {
@@ -3704,6 +3711,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'rmadopt') return await handleRemoveAdoptedRunButton(interaction, action, messageId);
       if (ns === 'req') return await handleRequestButton(interaction, action);
       if (ns === 'reqx') return await handleRequestExtrasButton(interaction, action, messageId);
+      if (ns === 'xc') return await handleExtraButton(interaction, action, messageId);
       if (ns !== 'run') return;
       if (action === 'join') return await handleJoin(interaction);
       if (action === 'leave') return await handleLeave(interaction);
@@ -3740,9 +3748,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'manage' && action === 'reschedule-submit') return await handleRescheduleSubmit(interaction, messageId);
       if (ns === 'manage' && action === 'details-submit') return await handleDetailsSubmit(interaction, messageId);
       if (ns === 'edit' && action === 'addname-submit') return await handleAddByNameSubmit(interaction, messageId);
-      if (ns === 'createrun' && action === 'extra-submit') return await handleCreateRunExtraSubmit(interaction, messageId);
+      if (ns === 'xc' && action === 'submit') return await handleExtraSubmit(interaction, messageId);
       if (ns === 'request' && action === 'submit') return await handleRequestSubmit(interaction);
-      if (ns === 'request' && action === 'final') return await handleRequestFinal(interaction);
       if (ns === 'req' && action === 'deny-submit') return await handleRequestDenySubmit(interaction);
     }
   } catch (err) {
