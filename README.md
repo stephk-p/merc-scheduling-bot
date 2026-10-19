@@ -247,16 +247,24 @@ Server Settings → Roles, or it won't be able to add/remove it.
 
 On servers set up for it (see `RUN_START_PING` in [src/config.js](src/config.js)), the bot pings
 30 minutes before a run starts, e.g. "Run is starting in 30 minutes! PF will be up shortly." (with a
-reminder underneath that the default PF Password is **8008**, bold/italic/underlined to stand out). If
-`ACTIVE_ROSTER_ROLE` is also set up (below), it @mentions that run's actual active roster directly
-instead of the role, so someone only waitlisted there (even if they're active in a different run)
-never gets pinged by mistake. Otherwise it pings the configured role, or `@here` if there isn't one.
+reminder underneath that the default PF Password is **8008**, bold/italic/underlined to stand out).
+If `ACTIVE_ROSTER_ROLE` is also set up (below), then right before that ping the bot checks the run's
+active roster, gives them the **active roster** role, and pings that role (anyone on the roster who
+doesn't hold it, such as a client, is @mentioned directly so nobody is missed). Otherwise it pings the
+configured role, or `@here` if there isn't one.
 
-On servers set up for it (see `ACTIVE_ROSTER_ROLE` in [src/config.js](src/config.js)), the bot also
-gives a role to whoever currently holds a slot in a run (not bench or waitlisted), and takes it away
-the moment they're bumped, leave, or the run ends. This role is shared across every run in the
-server, so being active in one run and waitlisted in another at the same time is expected to leave
-you holding it — that's fine, since pings themselves (above) never rely on this role alone. Only
+Plain-text clearees (a name that didn't match a server member) are also sorted out at that moment: if
+someone in the run's private channel holds the **Client** role and clearly matches the name (or is the
+only client in the channel and the only unmatched slot), the roster is edited to use that person's user
+ID so they can be pinged. The bot never guesses between several possible people.
+
+On servers set up for it (see `ACTIVE_ROSTER_ROLE` in [src/config.js](src/config.js)), the
+**active roster** role is only held around a run's start: it's given out when the 30-minute ping goes
+out and taken away 20 minutes after the run's start time (`ACTIVE_ROLE_REMOVE_AFTER_START_MIN`), or
+right away if the run is completed, failed or deleted. Anyone who still holds it outside that window
+is cleaned up automatically. The bot also renames that role to "active roster" on startup (same role,
+same ID). The role is shared across every run in the server, so two runs starting around the same time
+share it. Only
 members who already pass that server's `signupRoles` rule (below) can ever hold it — a clearee added
 via `/createrun`, or anyone picked up from a manually posted run via `/adoptrun`, never gets it just
 for holding a slot if they don't have that role. DM reminders only go out to people who currently

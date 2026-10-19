@@ -25,8 +25,11 @@ import {
 } from 'discord.js';
 import { DateTime } from 'luxon';
 import {
+  ACTIVE_ROLE_REMOVE_AFTER_START_MIN,
   ACTIVE_ROSTER_ROLE,
+  ACTIVE_ROSTER_ROLE_NAME,
   BOT_OWNER_ID,
+  CLIENT_ROLE_ID,
   DEFAULT_RUN_START_PING,
   PRIVATE_RUN_CHANNEL_ID,
   REQUEST_APPROVED_CHANNEL,
@@ -680,20 +683,34 @@ function logRun(run, text) {
 }
 
 /**
- * Whether userId currently holds a slot in ANY of this guild's open runs. Checking across every
- * run (not just the one that just changed) matters because the role is shared server-wide: being
- * waitlisted in one run must never strip a role earned by being active in a different one.
+ * Whether a run's active roster should hold the active roster role right now: from when the "run
+ * starting soon" ping goes out until ACTIVE_ROLE_REMOVE_AFTER_START_MIN minutes after it starts.
+ */
+function isInRoleWindow(run, now = Date.now()) {
+  if (run.status !== 'open' || !run.startsAt) return false;
+  const ping = RUN_START_PING[run.guildId] ?? DEFAULT_RUN_START_PING;
+  const startMs = run.startsAt * 1000;
+  return now >= startMs - ping.minutesBefore * 60 * 1000 &&
+    now <= startMs + ACTIVE_ROLE_REMOVE_AFTER_START_MIN * 60 * 1000;
+}
+
+/**
+ * Whether userId currently holds a slot in ANY of this guild's runs that are inside their role
+ * window. Checking across every run (not just the one that just changed) matters because the role
+ * is shared server-wide: being waitlisted in one run must never strip a role earned by being active
+ * in a different one.
  */
 function isActiveInGuild(guildId, userId) {
   for (const [, other] of allRuns()) {
-    if (other.guildId === guildId && other.status === 'open' && isActiveRosterMember(other, userId)) return true;
+    if (other.guildId === guildId && isInRoleWindow(other) && isActiveRosterMember(other, userId)) return true;
   }
   return false;
 }
 
 /**
  * Keep ACTIVE_ROSTER_ROLE in sync for `userIds` (normally a run's current sign-ups, plus anyone who
- * just left/was removed from it) by checking every open run in the guild, not just one.
+ * just left/was removed from it) by checking every run in the guild, not just one. The role is only
+ * ever held during a run's role window, so signing up for a run days ahead doesn't give it out early.
  */
 async function syncActiveRosterRole(guildId, guild, userIds) {
   const roleId = ACTIVE_ROSTER_ROLE[guildId];
@@ -1075,20 +1092,149 @@ function renameDayChannel(run, date) {
     .catch((err) => console.error(`Couldn't rename the channel for run ${run.runId}:`, err.message));
 }
 
+const normalizeName = (s) => String(s ?? '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+
+/** Swaps a roster entry's placeholder key (a plain-text name) for a real member's user ID. */
+function rekeyRosterEntry(run, oldKey, member) {
+  for (const s of run.signups) if (s.userId === oldKey) s.userId = member.id;
+  if (run.placed?.[oldKey]) {
+    run.placed[member.id] = run.placed[oldKey];
+    delete run.placed[oldKey];
+  }
+  if (run.manualLabels) delete run.manualLabels[oldKey];
+  if ((run.cleareeKey ?? run.cleareeId) === oldKey) {
+    run.cleareeKey = member.id;
+    run.cleareeId = member.id;
+  }
+  for (const extra of run.extraClearees ?? []) {
+    if (extra.key === oldKey) {
+      extra.key = member.id;
+      extra.id = member.id;
+    }
+  }
+}
+
+/**
+ * Before the "starting soon" ping: roster slots held by a plain-text name (a clearee who didn't match
+ * a server member) are linked to a real member when someone in the run's private channel holds the
+ * Client role and clearly matches — by name, or as the only unmatched slot with the only such client.
+ * The roster is then edited to use that person's user ID, so they can be pinged. Never guesses between
+ * several possible people. Returns true if the roster changed.
+ */
+async function linkPlaceholderClearees(messageId, run) {
+  if (!CLIENT_ROLE_ID || !run.privateChannelId) return false;
+  if (run.privateChannelId === run.channelId && !run.privateOnly) return false;
+
+  const { result } = render(run);
+  const placeholders = ROLES.map((r) => result.slots[r]?.userId).filter((id) => id && !isUserId(id));
+  if (!placeholders.length) return false;
+
+  const channel = await fetchPrivateChannel(run);
+  if (!channel?.guild) return false;
+  const overwriteIds = [...channel.permissionOverwrites.cache.values()]
+    .filter((o) => o.type === OverwriteType.Member).map((o) => o.id);
+  if (!overwriteIds.length) return false;
+  const members = await channel.guild.members.fetch({ user: overwriteIds }).catch(() => null);
+
+  const taken = new Set(run.signups.map((s) => s.userId));
+  let candidates = [...(members?.values() ?? [])].filter((m) =>
+    !m.user.bot && m.roles.cache.has(CLIENT_ROLE_ID) && !taken.has(m.id));
+  if (!candidates.length) return false;
+
+  const labels = labelsFor(run);
+  const linked = [];
+  for (const key of placeholders) {
+    const label = normalizeName(labels[key]);
+    let match = null;
+    if (label) {
+      const names = (m) => memberNames(m).map(normalizeName).filter(Boolean);
+      const exact = candidates.filter((m) => names(m).includes(label));
+      const loose = candidates.filter((m) =>
+        names(m).some((n) => n.length >= 3 && label.length >= 3 && (n.includes(label) || label.includes(n))));
+      if (exact.length === 1) [match] = exact;
+      else if (!exact.length && loose.length === 1) [match] = loose;
+    }
+    if (!match && placeholders.length === 1 && candidates.length === 1) [match] = candidates;
+    if (!match) continue;
+
+    linked.push({ label: labels[key] ?? key, member: match });
+    rekeyRosterEntry(run, key, match);
+    candidates = candidates.filter((m) => m.id !== match.id);
+  }
+  if (!linked.length) return false;
+
+  setRun(messageId, run);
+  const channelOfPost = await client.channels.fetch(run.channelId).catch(() => null);
+  const post = channelOfPost && (await channelOfPost.messages.fetch(messageId).catch(() => null));
+  if (post) await updatePost(messageId, run);
+  else await syncRosterCopy(messageId, run, render(run).content);
+  await logRun(run, `🔗 Linked ${linked.map((l) => `"${l.label}" to <@${l.member.id}>`).join(', ')} on the roster ` +
+    '(they hold the Client role in this channel).');
+  return true;
+}
+
+/** Renames the active roster role to ACTIVE_ROSTER_ROLE_NAME if it isn't called that already. */
+async function renameActiveRosterRole() {
+  for (const [guildId, roleId] of Object.entries(ACTIVE_ROSTER_ROLE)) {
+    const guild = await client.guilds.fetch(guildId).catch(() => null);
+    const role = guild && (await guild.roles.fetch(roleId).catch(() => null));
+    if (!role || role.name.toLowerCase() === ACTIVE_ROSTER_ROLE_NAME.toLowerCase()) continue;
+    await role.setName(ACTIVE_ROSTER_ROLE_NAME, 'Renamed to match the bot').then(
+      () => console.log(`Renamed the active roster role in ${guild.name} to "${ACTIVE_ROSTER_ROLE_NAME}".`),
+      (err) => console.error(`Couldn't rename the active roster role in ${guild.name} (needs Manage Roles, ` +
+        `with the bot's role above it): ${err.message}`),
+    );
+  }
+}
+
+let lastRoleCleanup = 0;
+const ROLE_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
+
+/**
+ * Takes the active roster role off anyone holding it who shouldn't: left over from before the role
+ * was limited to the run's window, from a run that ended or was deleted, or from a restart that
+ * missed the end of a window. Runs on startup and every few minutes after.
+ */
+async function cleanupActiveRosterRole() {
+  if (Date.now() - lastRoleCleanup < ROLE_CLEANUP_INTERVAL_MS) return;
+  lastRoleCleanup = Date.now();
+  for (const [guildId, roleId] of Object.entries(ACTIVE_ROSTER_ROLE)) {
+    const guild = await client.guilds.fetch(guildId).catch(() => null);
+    if (!guild) continue;
+    await guild.members.fetch().catch((err) => console.error(`Couldn't fetch members of ${guild.id}:`, err.message));
+    const holders = [...(guild.roles.cache.get(roleId)?.members.keys() ?? [])];
+    if (holders.length) await syncActiveRosterRole(guildId, guild, holders);
+  }
+}
+
 /** Posts the "starting soon" ping in a run's private channel, once. roleId null means @here. */
 async function sendRolePing(run, roleId) {
   const channel = await client.channels.fetch(run.privateChannelId);
   let mention = roleId ? `<@&${roleId}>` : '@here';
   let allowedMentions = roleId ? { roles: [roleId] } : { parse: ['everyone'] };
 
-  // The active-roster role is shared across every run in the guild, so it can't tell runs apart —
-  // someone active in another run (or no longer placed in this one) could get pinged by mistake.
-  // Mentioning this run's actual active roster directly avoids that entirely.
-  if (ACTIVE_ROSTER_ROLE[run.guildId]) {
+  // Hands the active roster role to this run's active roster first, then pings the role. Anyone on
+  // the roster who still doesn't hold it (a client, who never gets the role on its own, or a role
+  // that couldn't be assigned) is mentioned directly so nobody is missed.
+  const activeRoleId = ACTIVE_ROSTER_ROLE[run.guildId];
+  if (activeRoleId) {
+    const guild = await client.guilds.fetch(run.guildId).catch(() => null);
     const { result } = render(run);
     const activeIds = ROLES.map((r) => result.slots[r]?.userId).filter(isUserId);
-    mention = activeIds.length ? activeIds.map((id) => `<@${id}>`).join(' ') : '@here';
-    allowedMentions = activeIds.length ? { users: activeIds } : { parse: ['everyone'] };
+    if (guild && activeIds.length) {
+      await syncActiveRosterRole(run.guildId, guild, activeIds);
+      const direct = [];
+      for (const id of activeIds) {
+        const member = await guild.members.fetch(id).catch(() => null);
+        if (!member?.roles.cache.has(activeRoleId)) direct.push(id);
+      }
+      mention = [`<@&${activeRoleId}>`, ...direct.map((id) => `<@${id}>`)].join(' ');
+      allowedMentions = { roles: [activeRoleId], users: direct };
+    } else {
+      // Nobody real on the roster to hand the role to, so there's nobody for the role ping to reach.
+      mention = '@here';
+      allowedMentions = { parse: ['everyone'] };
+    }
   }
 
   await channel.send({
@@ -1175,6 +1321,8 @@ function hasRoleCommandAccess(guildId, roleId, command) {
 // itself so a restart never sends a duplicate.
 async function sweepReminders() {
   const now = Date.now();
+  await cleanupActiveRosterRole()
+    .catch((err) => console.error('Couldn\'t clean up the active roster role:', err.message));
   for (const [messageId, run] of allRuns()) {
     // Runs independently of status/timing, so access lost by hand is caught even on closed runs.
     if (run.privateChannelId) {
@@ -1187,8 +1335,12 @@ async function sweepReminders() {
     if (run.status !== 'open' || !run.startsAt) continue;
     const msUntilStart = run.startsAt * 1000 - now;
 
-    // Catches runs that existed before this role was set up, or whose roster hasn't changed since.
-    if (ACTIVE_ROSTER_ROLE[run.guildId]) {
+    // The role is only held during the run's window, so this adds it when the window opens and takes
+    // it away once it closes. Anything left over elsewhere is handled by cleanupActiveRosterRole.
+    const pingWindow = RUN_START_PING[run.guildId] ?? DEFAULT_RUN_START_PING;
+    const windowStartMs = run.startsAt * 1000 - pingWindow.minutesBefore * 60 * 1000;
+    const windowEndMs = run.startsAt * 1000 + (ACTIVE_ROLE_REMOVE_AFTER_START_MIN + 5) * 60 * 1000;
+    if (ACTIVE_ROSTER_ROLE[run.guildId] && now >= windowStartMs && now <= windowEndMs) {
       const guild = await client.guilds.fetch(run.guildId).catch(() => null);
       if (guild) await syncActiveRosterRole(run.guildId, guild, run.signups.map((s) => s.userId));
     }
@@ -1208,8 +1360,12 @@ async function sweepReminders() {
         msUntilStart <= rolePing.minutesBefore * 60 * 1000) {
       run.rolePingSent = true;
       setRun(messageId, run);
-      await sendRolePing(run, rolePing.roleId)
-        .catch((err) => console.error(`Couldn't send the start ping for run ${run.runId}:`, err.message));
+      await withLock(messageId, async () => {
+        const current = getRun(messageId) ?? run;
+        await linkPlaceholderClearees(messageId, current)
+          .catch((err) => console.error(`Couldn't link clearees for run ${current.runId}:`, err.message));
+        await sendRolePing(current, rolePing.roleId);
+      }).catch((err) => console.error(`Couldn't send the start ping for run ${run.runId}:`, err.message));
     }
 
     for (const signup of run.signups) {
@@ -3676,6 +3832,7 @@ client.once(Events.ClientReady, async (c) => {
   console.log(`Logged in as ${c.user.tag}. In ${c.guilds.cache.size} server(s).`);
   await registerCommands(c);
   await confirmBotUpdate();
+  await renameActiveRosterRole();
   await sweepChannels();
   await pruneRuns();
   await upgradeStartStamps();

@@ -36,12 +36,19 @@ export const RUN_START_PING = {
 /** Used for servers not listed in RUN_START_PING above. */
 export const DEFAULT_RUN_START_PING = { roleId: null, minutesBefore: 30 };
 
-// Per-server role given to whoever currently holds a slot (not bench/waitlisted) in a run, so the
-// "run starting soon" ping above only reaches people who can actually see the channel and are
-// really playing. Added/removed automatically as the roster changes.
+// Per-server role given to the people holding a slot (not bench/waitlisted) in a run, only around
+// the time it starts: it's assigned when the "run starting soon" ping goes out (see RUN_START_PING)
+// and removed ACTIVE_ROLE_REMOVE_AFTER_START_MIN minutes after the run's start time. The ping is
+// sent to this role, so anyone can also ping it later to say PF is up.
 export const ACTIVE_ROSTER_ROLE = {
   [UMAD_GUILD_ID]: '1555042669154275348',
 };
+
+/** The bot renames the ACTIVE_ROSTER_ROLE role to this (same role, same ID) when it starts up. */
+export const ACTIVE_ROSTER_ROLE_NAME = 'active roster';
+
+/** How long after a run's start time its active roster keeps the role before it's taken away. */
+export const ACTIVE_ROLE_REMOVE_AFTER_START_MIN = 20;
 
 // Servers where the run creator gets a private DM (with Completed/Failed/Reschedule buttons) when
 // a run's scheduled time arrives. Off by default; add `'<guildId>': true` to turn it on somewhere.
