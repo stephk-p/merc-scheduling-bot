@@ -98,7 +98,7 @@ const reminderLabel = (m) => (m === 60 ? '1 hour before' : `${m} minutes before`
 
 // Commands an admin can grant/revoke access to for a specific role or member via /access,
 // on top of the server's normal commandRoles/preferenceRoles.
-const GRANTABLE_COMMANDS = ['createrun', 'privaterun', 'adoptrun', 'managerun', 'runs', 'setpreference', 'removeadoptedrun'];
+const GRANTABLE_COMMANDS = ['createrun', 'privaterun', 'adoptrun', 'managerun', 'runs', 'setpreference', 'removeadoptedrun', 'approverequests'];
 
 const COMMAND_BLURBS = {
   createrun: 'Post a new run and create its private channel',
@@ -116,6 +116,8 @@ const COMMAND_BLURBS = {
   fixrun: "Repost a missing roster copy in any run's private channel (admins only)",
   setlogchannel: 'Set or clear the channel roster activity gets logged to (admins only)',
   request: 'Submit a run request for an overseer to approve or deny',
+  approverequests: 'Approve or deny run requests (the buttons on each request)',
+  approver: 'Let a role or member approve/deny run requests, or take it away (admins and overseers)',
   botupdate: 'Check GitHub for an update and restart if there is one (bot owner only)',
   requestmin: 'Set or clear the minimum amount a run request must have (admins only)',
   help: 'Show this help message',
@@ -276,6 +278,14 @@ const commands = [
       o.setName('amount')
         .setDescription('Minimum amount, e.g. 5m (leave blank to remove the minimum)')
         .setMaxLength(50)),
+  new SlashCommandBuilder()
+    .setName('approver')
+    .setDescription('Let a role or member approve/deny run requests, or take it away')
+    .addStringOption((o) =>
+      o.setName('action').setDescription('Give or remove the ability').setRequired(true)
+        .addChoices({ name: 'Allow', value: 'allow' }, { name: 'Remove', value: 'remove' }))
+    .addRoleOption((o) => o.setName('role').setDescription('Role to change (pick this or member)'))
+    .addUserOption((o) => o.setName('member').setDescription('Member to change (pick this or role)')),
   new SlashCommandBuilder()
     .setName('botupdate')
     .setDescription("Check GitHub for an update right now, instead of waiting for the daily check")
@@ -1712,6 +1722,7 @@ async function handleHelp(interaction) {
       .filter((c) => hasCommandAccess(interaction, c));
     if (runCommands.length) {
       const manage = ['**Creating and managing runs**', ...bullets(runCommands)];
+      manage.push(...bullets(['approver']));
       if (runCommands.includes('managerun')) {
         manage.push('Give `/managerun` a run\'s Merc Run ID to mark it completed or failed, reschedule it, ' +
           'edit its roster, change its details, or delete it.');
@@ -2074,8 +2085,12 @@ async function submitRequest(req, extras) {
   return '✅ Your run request has been submitted.';
 }
 
+/** Who can approve/deny run requests: the approverequests permission, or anyone who can use /createrun. */
+const canReviewRequests = (interaction) =>
+  hasCommandAccess(interaction, 'approverequests') || hasCommandAccess(interaction, 'createrun');
+
 async function handleRequestButton(interaction, action) {
-  if (!hasCommandAccess(interaction, 'createrun')) {
+  if (!canReviewRequests(interaction)) {
     return interaction.reply(ephemeral(commandAccessDeniedText(interaction, 'approve or deny run requests')));
   }
   const req = getRequest(interaction.message.id);
@@ -2164,7 +2179,7 @@ async function approveRequest(interaction) {
 }
 
 async function handleRequestDenySubmit(interaction) {
-  if (!hasCommandAccess(interaction, 'createrun')) {
+  if (!canReviewRequests(interaction)) {
     return interaction.reply(ephemeral(commandAccessDeniedText(interaction, 'approve or deny run requests')));
   }
   const requestId = interaction.customId.split(':')[2];
@@ -2192,6 +2207,40 @@ async function handleRequestDenySubmit(interaction) {
     return interaction.editReply(sent
       ? 'Request denied and the requester was DMed the reason.'
       : "Request denied, but I couldn't DM the requester (their DMs may be closed).");
+  });
+}
+
+/** /approver: admins and anyone who can use /createrun (e.g. overseers) hand out or take away the approve/deny ability. */
+async function handleApprover(interaction) {
+  if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
+  if (!hasCommandAccess(interaction, 'createrun')) {
+    return interaction.reply(ephemeral(commandAccessDeniedText(interaction, 'use `/approver`')));
+  }
+
+  const role = interaction.options.getRole('role');
+  const member = interaction.options.getUser('member');
+  if (!role && !member) return interaction.reply(ephemeral('Pick a **role** or a **member**.'));
+  if (role && member) return interaction.reply(ephemeral('Pick only one: a **role** or a **member**, not both.'));
+
+  const allow = interaction.options.getString('action', true) === 'allow';
+  const guildId = interaction.guildId;
+  if (allow) {
+    if (role) grantRole(guildId, 'approverequests', role.id);
+    else grantUser(guildId, 'approverequests', member.id);
+  } else if (role) {
+    revokeRole(guildId, 'approverequests', role.id);
+  } else {
+    revokeUser(guildId, 'approverequests', member.id);
+  }
+
+  const who = role ? `<@&${role.id}>` : `<@${member.id}>`;
+  return interaction.reply({
+    content: allow
+      ? `✅ ${who} can now approve and deny run requests.`
+      : `➖ ${who} can no longer approve or deny run requests through this setting. ` +
+        'Anyone who can use `/createrun` still can.',
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
   });
 }
 
@@ -3682,6 +3731,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'setlogchannel': return await handleSetLogChannel(interaction);
         case 'request': return await handleRequest(interaction);
         case 'requestmin': return await handleRequestMin(interaction);
+        case 'approver': return await handleApprover(interaction);
         case 'botupdate': return await handleBotUpdate(interaction);
         default: return;
       }
