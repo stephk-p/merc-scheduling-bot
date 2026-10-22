@@ -2221,16 +2221,28 @@ async function handleRequestExtrasButton(interaction, action, token) {
   return finishExtras(interaction, token, state, true);
 }
 
+/** Roles that can approve/deny run requests: the server's command roles plus /access grants for /createrun or approverequests. */
+function reviewerRoleIds(guildId) {
+  return [...new Set([
+    ...(SERVER_RULES[guildId]?.commandRoles ?? []),
+    ...getGrants(guildId, 'createrun').roles,
+    ...getGrants(guildId, 'approverequests').roles,
+  ])];
+}
+
 /** Posts a finished request in the requests channel. Returns the message to show the requester. */
 async function submitRequest(req, extras) {
   const channel = await client.channels.fetch(REQUEST_CHANNEL[req.guildId]).catch(() => null);
   if (!channel) return "I can't reach the requests channel right now. Let an admin know.";
 
   const full = { ...req, extras };
+  const reviewers = reviewerRoleIds(req.guildId);
+  const ping = reviewers.length ? `${reviewers.map((id) => `<@&${id}>`).join(' ')} new run request:\n` : '';
+  // The ping is only on the first post; once it's approved or denied the message is edited without it.
   const post = await channel.send({
-    content: requestContent(full, '⏳ Waiting for an overseer or admin.'),
+    content: ping + requestContent(full, '⏳ Waiting for an overseer or admin.'),
     components: [requestButtons()],
-    allowedMentions: { parse: [] },
+    allowedMentions: { roles: reviewers },
   }).catch((err) => {
     console.error('Couldn\'t post a run request:', err.message);
     return null;
