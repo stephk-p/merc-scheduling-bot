@@ -29,6 +29,7 @@ import {
   ACTIVE_ROSTER_ROLE,
   ACTIVE_ROSTER_ROLE_NAME,
   BOT_OWNER_ID,
+  CLIENT_ROLE,
   CLIENT_ROLE_ID,
   DEFAULT_RUN_START_PING,
   PRIVATE_RUN_CHANNEL_ID,
@@ -1245,17 +1246,24 @@ async function sendRolePing(run, roleId) {
 }
 
 /**
- * Pings @here once in the run's private channel when it's marked completed, never anywhere else.
+ * Posts the completion message in the run's private channel, never anywhere else. It tags the
+ * clearee(s) when they're matched server members; if none of them could be matched (a plain name),
+ * it tags the server's Client role instead (CLIENT_ROLE in config.js), and nobody if there isn't one.
  * `deleteAt` is the unix-seconds timestamp the channel gets deleted at, shown as a live countdown.
  */
 async function sendCompletionAnnouncement(run, deleteAt) {
   try {
     const channel = await fetchPrivateChannel(run);
     if (!channel) return;
+    const clearees = [...new Set([run.cleareeId, ...(run.extraClearees ?? []).map((e) => e.id)].filter(isUserId))];
+    const clientRoleId = CLIENT_ROLE[run.guildId];
+    const tagIds = clearees.map((id) => `<@${id}>`);
+    if (!clearees.length && clientRoleId) tagIds.push(`<@&${clientRoleId}>`);
+    const tags = tagIds.length ? `${tagIds.join(' ')} ` : '';
     await channel.send({
-      content: '@here Congrats! This run has been completed. This channel will be deleted ' +
+      content: `${tags}Congrats! This run has been completed. This channel will be deleted ` +
         `<t:${deleteAt}:R>. Please grab any screenshots you'd like, and good luck in future endeavors!`,
-      allowedMentions: { parse: ['everyone'] },
+      allowedMentions: { users: clearees, roles: !clearees.length && clientRoleId ? [clientRoleId] : [] },
     });
   } catch (err) {
     console.error(`Couldn't post the completion message for run ${run.runId}:`, err.message);

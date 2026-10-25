@@ -4,6 +4,12 @@ export const MERCS_ROLE_ID = '1529562550348288040'; // UMAD: "mercs"
 export const OVERSEER_ROLE_ID = '1551648248593256498'; // UMAD: "overseer"
 export const CLIENT_ROLE_ID = '1529564460660818112'; // UMAD: "client" — never gets the active roster role on its own
 
+// Per-server "Client" role (alias for the role above in UMAD). Tagged in the completion message when
+// the clearee couldn't be matched to a server member.
+export const CLIENT_ROLE = {
+  [UMAD_GUILD_ID]: CLIENT_ROLE_ID,
+};
+
 // The only Discord user who can use /botupdate, regardless of server or admin permissions.
 export const BOT_OWNER_ID = '103037694984073216';
 
