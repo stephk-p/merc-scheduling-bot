@@ -3438,31 +3438,40 @@ async function handleSelect(interaction, messageId, kind, targetId = null) {
   });
 }
 
+/** Runs one non-essential step after a sign-up change; a failure is logged and never stops the steps after it. */
+const bestEffort = (label, fn) => Promise.resolve().then(fn)
+  .catch((err) => console.error(`Sign-up follow-up failed (${label}):`, err.message));
+
 async function handleConfirm(interaction, messageId, encodedValues, encodedJobs) {
   const values = decodeValues(encodedValues);
   const jobs = decodeJobs(encodedJobs);
+
+  // Acknowledged right away: Discord only allows 3 seconds to respond, and when several people confirm
+  // at once this request can wait behind the others in the lock below. Answering only at the end meant
+  // the later ones timed out after their sign-up was already saved, which skipped the rest of the steps.
+  await interaction.deferUpdate();
 
   return withLock(messageId, async () => {
     const post = await fetchPost(interaction, messageId);
     if (!post) {
       deleteRun(messageId);
-      return interaction.update({ content: 'That run post no longer exists.', components: [] });
+      return interaction.editReply({ content: 'That run post no longer exists.', components: [] });
     }
 
     const run = runFromPost(post);
-    if (isClosed(run)) return interaction.update({ content: closedMessage(run), components: [] });
+    if (isClosed(run)) return interaction.editReply({ content: closedMessage(run), components: [] });
 
     const userId = interaction.user.id;
     const isNew = !run.signups.some((s) => s.userId === userId);
     // signupRoles only restricts new sign-ups; anyone already on the roster can always manage their own pick.
     if (isNew && !hasRuleRole(interaction, 'signupRoles')) {
-      return interaction.update({ content: needRoleText(interaction, 'signupRoles', 'sign up for runs'), components: [] });
+      return interaction.editReply({ content: needRoleText(interaction, 'signupRoles', 'sign up for runs'), components: [] });
     }
     const others = run.signups.filter((s) => s.userId !== userId);
     const signup = selectionToSignup(userId, values, jobs);
     const check = checkSelection(signup);
     if (!check.ok) {
-      return interaction.update({ content: check.problems.join('\n'), components: [] });
+      return interaction.editReply({ content: check.problems.join('\n'), components: [] });
     }
 
     // A new or changed pick goes to the back of the line. Anyone who signed up earlier keeps
@@ -3470,44 +3479,58 @@ async function handleConfirm(interaction, messageId, encodedValues, encodedJobs)
     const signups = [...others, signup];
     const rendered = render(run, signups);
     if (rendered.content.length > 2000) {
-      return interaction.update({ content: 'This run post is full and can\'t fit more sign-ups.', components: [] });
+      return interaction.editReply({ content: 'This run post is full and can\'t fit more sign-ups.', components: [] });
     }
 
-    await post.edit({ content: rendered.content, allowedMentions: { parse: [] } });
+    // The saved roster is updated first so the sign-up is never lost, even if editing the post fails.
     const updated = { ...run, signups, placed: rendered.placed };
     setRun(messageId, updated);
-    await syncActiveRosterRole(updated.guildId, interaction.guild, signups.map((s) => s.userId));
-    await interaction.update({
+    await post.edit({ content: rendered.content, allowedMentions: { parse: [] } });
+    await interaction.editReply({
       content: outcomeText(signup, rendered) + (signup.jobs.length ? `\nJobs: **${describeJobs(signup)}**` : ''),
       components: [],
-    });
-    await syncRosterCopy(messageId, updated, rendered.content);
-    if (isNew) await addToPrivateChannel(updated, userId);
-    await logRun(updated, isNew
+    }).catch((err) => console.error('Couldn\'t confirm the sign-up to the user:', err.message));
+
+    if (isInRoleWindow(updated)) {
+      await bestEffort('role', () => syncActiveRosterRole(updated.guildId, interaction.guild, signups.map((s) => s.userId)));
+    }
+    await bestEffort('roster copy', () => syncRosterCopy(messageId, updated, rendered.content));
+    if (isNew) await bestEffort('channel access', () => addToPrivateChannel(updated, userId));
+    await bestEffort('log', () => logRun(updated, isNew
       ? `✅ <@${userId}> signed up as **${describeSignup(signup)}**.`
-      : `✏️ <@${userId}> changed their pick to **${describeSignup(signup)}**.`);
+      : `✏️ <@${userId}> changed their pick to **${describeSignup(signup)}**.`));
+    return undefined;
   });
 }
 
 async function handleLeave(interaction) {
+  // Acknowledged first for the same reason as handleConfirm; the post itself is then edited below.
+  await interaction.deferUpdate();
+
   return withLock(interaction.message.id, async () => {
     const post = await interaction.message.fetch();
     const run = runFromPost(post);
-    if (isClosed(run)) return interaction.reply(ephemeral(closedMessage(run)));
+    if (isClosed(run)) return interaction.followUp(ephemeral(closedMessage(run)));
 
     const mine = run.signups.find((s) => s.userId === interaction.user.id);
-    if (!mine) return interaction.reply(ephemeral("You aren't signed up for this run."));
+    if (!mine) return interaction.followUp(ephemeral("You aren't signed up for this run."));
 
     const signups = run.signups.filter((s) => s !== mine);
     const rendered = render(run, signups);
-    await interaction.update({ content: rendered.content, allowedMentions: { parse: [] } });
     const updated = { ...run, signups, placed: rendered.placed };
     setRun(post.id, updated);
-    await syncActiveRosterRole(updated.guildId, interaction.guild, [...signups.map((s) => s.userId), interaction.user.id]);
-    await interaction.followUp(ephemeral(`Removed you from the run (you were **${describeSignup(mine)}**).`));
-    await syncRosterCopy(post.id, updated, rendered.content);
-    await removeFromPrivateChannel(updated, interaction.user.id);
-    await logRun(updated, `❌ <@${interaction.user.id}> left (was **${describeSignup(mine)}**).`);
+    await interaction.editReply({ content: rendered.content, allowedMentions: { parse: [] } });
+    await interaction.followUp(ephemeral(`Removed you from the run (you were **${describeSignup(mine)}**).`))
+      .catch((err) => console.error('Couldn\'t confirm the leave to the user:', err.message));
+
+    if (isInRoleWindow(updated)) {
+      await bestEffort('role', () => syncActiveRosterRole(
+        updated.guildId, interaction.guild, [...signups.map((s) => s.userId), interaction.user.id]));
+    }
+    await bestEffort('roster copy', () => syncRosterCopy(post.id, updated, rendered.content));
+    await bestEffort('channel access', () => removeFromPrivateChannel(updated, interaction.user.id));
+    await bestEffort('log', () => logRun(updated, `❌ <@${interaction.user.id}> left (was **${describeSignup(mine)}**).`));
+    return undefined;
   });
 }
 
