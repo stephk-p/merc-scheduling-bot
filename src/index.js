@@ -43,6 +43,7 @@ import {
 } from './config.js';
 import {
   BENCH,
+  DPS_JOBS,
   JOBS,
   MELEE_JOBS,
   OPTIONAL_JOB_ROLES,
@@ -429,14 +430,17 @@ function rolePicker(ns, target, status, selected = [], jobs = [], canConfirm = f
 
   const rows = [new ActionRowBuilder().addComponents(select)];
 
-  // Required: tank jobs for MT/OT, melee jobs for M1/M2.
+  // Required: tank jobs for MT/OT, melee jobs for M1/M2. A run manager editing someone else's pick
+  // ('edit') can give M1/M2 any DPS job (melee, ranged or caster).
+  const anyDps = ns === 'edit';
   for (const g of REQUIRED_JOB_GROUPS) {
     const forRoles = picked.filter((r) => g.roles.includes(r)).join('/');
     if (!forRoles) continue;
+    const dps = anyDps && g.key === 'melee';
     rows.push(jobMenu(
       `${ns}:jobs-${g.key}:${target}`,
-      `Required: which ${g.label} jobs can you play? (${forRoles})`,
-      g.jobs.map((job) => ({ job, forRoles })),
+      `Required: which ${dps ? 'DPS' : g.label} jobs can you play? (${forRoles})`,
+      (dps ? DPS_JOBS : g.jobs).map((job) => ({ job, forRoles })),
       jobs,
       1,
     ));
@@ -483,12 +487,14 @@ function manageButtons(messageId, run) {
         .setStyle(ButtonStyle.Danger).setDisabled(run.status === 'failed'),
       new ButtonBuilder().setCustomId(`manage:reschedule:${messageId}`).setLabel('Reschedule').setEmoji('🕒')
         .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId(`manage:edit:${messageId}`).setLabel('Edit roster').setEmoji('📝')
+      new ButtonBuilder().setCustomId(`manage:edit:${messageId}`).setLabel('Edit roster (old)').setEmoji('📝')
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`manage:delete:${messageId}`).setLabel('Delete run').setEmoji('🗑️')
         .setStyle(ButtonStyle.Secondary),
     ),
     new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`manage:editform:${messageId}`).setLabel('Edit roster (form)').setEmoji('📋')
+        .setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId(`manage:details:${messageId}`).setLabel('Edit details').setEmoji('✏️')
         .setStyle(ButtonStyle.Secondary),
     ),
@@ -1516,15 +1522,19 @@ async function pruneRuns() {
 // ---------------------------------------------------------------------------
 // Slash command handlers
 // ---------------------------------------------------------------------------
-/** Validate typed jobs for a role. Returns { jobs } or { error }. */
-function checkJobInput(role, input, option, required) {
-  const { jobs, invalid } = parseJobInput(role, input);
+/**
+ * Validate typed jobs for a role. Returns { jobs } or { error }. `anyDps` lets M1/M2 take any DPS job
+ * (melee, ranged or caster); it's for staff (/createrun, /privaterun, run managers), not self-requests.
+ */
+function checkJobInput(role, input, option, required, anyDps = false) {
+  const { jobs, invalid } = parseJobInput(role, input, { anyDps });
+  const pool = (['M1', 'M2'].includes(role) && !anyDps ? MELEE_JOBS : ROLE_JOBS[role]).join('/');
   if (invalid.length) {
     return { error: `Not a ${role} job in **${option}**: **${escapeMarkdown(invalid.join(', '))}**. ` +
-      `Pick from ${ROLE_JOBS[role].join('/')}.` };
+      `Pick from ${pool}.` };
   }
   if (required && !jobs.length) {
-    return { error: `The **${option}** option is required for ${role}. Pick from ${ROLE_JOBS[role].join('/')}.` };
+    return { error: `The **${option}** option is required for ${role}. Pick from ${pool}.` };
   }
   return { jobs };
 }
@@ -1626,27 +1636,27 @@ function extraClearModal(token, index, total, prio = false) {
 }
 
 /** Parses "H1, WHM" into a role and its jobs, rejecting roles already taken. Returns { role, jobs } or { error }. */
-function parseRoleJob(text, usedRoles) {
+function parseRoleJob(text, usedRoles, anyDps = false) {
   const [roleRaw, ...jobTokens] = text.trim().split(/[\s,/]+/).filter(Boolean);
   const role = roleRaw?.toUpperCase();
   if (!ROLES.includes(role)) {
     return { error: `Start with a role (${ROLES.join('/')}) then their job(s), e.g. "H1, WHM".` };
   }
   if (usedRoles.has(role)) return { error: `Two people can't both have the **${role}** slot.` };
-  const check = checkJobInput(role, jobTokens.join('/'), 'job', missingJobs([role], []).length > 0);
+  const check = checkJobInput(role, jobTokens.join('/'), 'job', missingJobs([role], [], { anyDps }).length > 0, anyDps);
   if (check.error) return { error: check.error };
   return { role, jobs: check.jobs };
 }
 
 /** Validates one extra-clearee form. Returns { extra } or { error }. */
-function readExtraClearee(interaction, usedRoles) {
+function readExtraClearee(interaction, usedRoles, anyDps = false) {
   const picked = interaction.fields.getSelectedUsers('user')?.first();
   if (picked?.bot) return { error: "Bots can't be clearees." };
   // A picked member is stored as a mention, which resolves straight to that member (no name matching).
   const name = picked ? `<@${picked.id}>` : noMassPing(interaction.fields.getTextInputValue('name').trim());
   if (!name) return { error: 'Pick a member from the list, or type a name.' };
 
-  const parsed = parseRoleJob(interaction.fields.getTextInputValue('rolejob'), usedRoles);
+  const parsed = parseRoleJob(interaction.fields.getTextInputValue('rolejob'), usedRoles, anyDps);
   if (parsed.error) return { error: parsed.error };
   return { extra: { name, role: parsed.role, jobs: parsed.jobs } };
 }
@@ -1665,7 +1675,7 @@ async function readPrioMerc(interaction, usedRoles, usedIds) {
     return { error: `<@${picked.id}> needs one of these roles for a prio slot: ${allowed.map((id) => `<@&${id}>`).join(', ')}.` };
   }
 
-  const parsed = parseRoleJob(interaction.fields.getTextInputValue('rolejob'), usedRoles);
+  const parsed = parseRoleJob(interaction.fields.getTextInputValue('rolejob'), usedRoles, true);
   if (parsed.error) return { error: parsed.error };
   return { prio: { id: picked.id, role: parsed.role, jobs: parsed.jobs } };
 }
@@ -1716,7 +1726,8 @@ async function handleExtraSubmit(interaction, token) {
   }
 
   const used = new Set([state.mainRole, ...state.extras.map((e) => e.role)]);
-  const read = readExtraClearee(interaction, used);
+  // /createrun is already staff-only; a /request can also come from a regular member, who gets melee jobs only in M1/M2.
+  const read = readExtraClearee(interaction, used, state.kind === 'createrun' || isRunStaff(interaction));
   if (read.error) return retry(read.error);
 
   state.extras.push(read.extra);
@@ -1784,7 +1795,7 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
     return interaction.reply(ephemeral(`This command can only be used in <#${requiredChannelId}>.`));
   }
 
-  const main = checkJobInput(role, jobInput, 'job', true);
+  const main = checkJobInput(role, jobInput, 'job', true, true);
   if (main.error) return interaction.reply(ephemeral(main.error));
   const { jobs } = main;
 
@@ -2360,7 +2371,7 @@ async function handleRequestSubmit(interaction) {
   if (!ROLES.includes(role)) {
     return interaction.reply(ephemeral(`Start the role/job field with your role: ${ROLES.join('/')}. e.g. \`MT, GNB\`.`));
   }
-  const check = checkJobInput(role, roleJob.slice(1).join('/'), 'role/job', true);
+  const check = checkJobInput(role, roleJob.slice(1).join('/'), 'role/job', true, isRunStaff(interaction));
   if (check.error) return interaction.reply(ephemeral(check.error));
 
   const zone = getUserZone(interaction.user.id);
@@ -2433,6 +2444,15 @@ async function submitRequest(req, extras) {
 }
 
 /** Who can approve/deny run requests: the approverequests permission, or anyone who can use /createrun. */
+/**
+ * Staff who can put any DPS job in M1/M2: admins and anyone who can use /createrun or /privaterun.
+ * (Run managers editing a roster get the same, since that screen is already limited to them.)
+ */
+function isRunStaff(interaction) {
+  return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) ||
+    hasCommandAccess(interaction, 'createrun') || hasCommandAccess(interaction, 'privaterun');
+}
+
 const canReviewRequests = (interaction) =>
   hasCommandAccess(interaction, 'approverequests') || hasCommandAccess(interaction, 'createrun');
 
@@ -3282,6 +3302,8 @@ async function handleManageButton(interaction, action, messageId) {
       return interaction.showModal(rescheduleModal(messageId, run));
     case 'details':
       return interaction.showModal(detailsModal(messageId, run));
+    case 'editform':
+      return interaction.showModal(rosterFormModal(messageId));
     case 'edit':
       return interaction.update(await editPanel(interaction, messageId, run));
     case 'delete':
@@ -3480,13 +3502,16 @@ function previousPicks(message) {
   return { values: [], jobs: [] };
 }
 
-/** Whether a selection can be confirmed, and what's still missing if not. */
-function checkSelection(signup) {
+/**
+ * Whether a selection can be confirmed, and what's still missing if not. `anyDps` (run managers
+ * editing a roster) lets M1/M2 take any DPS job instead of requiring a melee one.
+ */
+function checkSelection(signup, anyDps = false) {
   if (signup.mode !== 'bench' && !signup.roles.length) {
     return { ok: false, problems: ['Pick at least one role, or BENCH.'] };
   }
-  const problems = missingJobs(signup.roles, signup.jobs).map((g) =>
-    `⚠️ Pick at least one **${g.label} job** (${g.jobs.join('/')}) for ${g.picked.join('/')} in the menu below.`);
+  const problems = missingJobs(signup.roles, signup.jobs, { anyDps }).map((g) =>
+    `⚠️ Pick at least one **${anyDps && g.key === 'melee' ? 'DPS' : g.label} job** (${g.jobs.join('/')}) for ${g.picked.join('/')} in the menu below.`);
   return { ok: !problems.length, problems };
 }
 
@@ -3593,11 +3618,11 @@ async function handleJoin(interaction) {
  * that changed, so the rest comes from the Confirm button. It also doesn't say which order roles
  * were ticked in, so the order from the last update is kept and newly ticked roles go on the end.
  */
-function nextPicks(interaction, kind) {
+function nextPicks(interaction, kind, anyDps = false) {
   const prev = previousPicks(interaction.message);
   if (kind === 'select') return { values: orderedSelection(prev.values, interaction.values), jobs: prev.jobs };
   const menuJobs = kind === 'jobs-tank' ? TANK_JOBS
-    : kind === 'jobs-melee' ? MELEE_JOBS
+    : kind === 'jobs-melee' ? (anyDps ? DPS_JOBS : MELEE_JOBS)
       : jobsForRoles(prev.values.filter((r) => OPTIONAL_JOB_ROLES.includes(r)));
   return { values: prev.values, jobs: [...prev.jobs.filter((j) => !menuJobs.includes(j)), ...interaction.values] };
 }
@@ -3609,7 +3634,7 @@ async function handleSelect(interaction, messageId, kind, targetId = null) {
     if (!saved) return interaction.update({ content: 'That run no longer exists.', components: [] });
     if (!canManage(interaction, saved)) return interaction.update({ content: notManagerText(interaction), components: [] });
   }
-  const { values, jobs } = nextPicks(interaction, kind);
+  const { values, jobs } = nextPicks(interaction, kind, Boolean(targetId));
 
   let run = targetId ? getRun(messageId) : null;
   if (!run) {
@@ -3631,7 +3656,7 @@ async function handleSelect(interaction, messageId, kind, targetId = null) {
   const { others, status } = viewFor(run, userId);
   const signup = selectionToSignup(userId, values, jobs);
   const preview = render(run, [...others, signup]);
-  const check = checkSelection(signup);
+  const check = checkSelection(signup, Boolean(targetId));
 
   const lines = [outcomeText(signup, preview, true, who)];
   if (signup.jobs.length) lines.push(`Jobs: **${describeJobs(signup)}**`);
@@ -3825,7 +3850,7 @@ async function handleEditAdd(interaction, messageId) {
   return interaction.update({
     content: intro,
     components: rolePicker('edit', `${messageId}:${userId}`, status,
-      mine ? selectionValues(mine) : [], mine?.jobs ?? [], mine ? checkSelection(mine).ok : false),
+      mine ? selectionValues(mine) : [], mine?.jobs ?? [], mine ? checkSelection(mine, true).ok : false),
     allowedMentions: { parse: [] },
   });
 }
@@ -3865,21 +3890,40 @@ async function handleAddByNameSubmit(interaction, messageId) {
   return interaction.editReply({
     content: intro,
     components: rolePicker('edit', `${messageId}:${userId}`, status,
-      mine ? selectionValues(mine) : [], mine?.jobs ?? [], mine ? checkSelection(mine).ok : false),
+      mine ? selectionValues(mine) : [], mine?.jobs ?? [], mine ? checkSelection(mine, true).ok : false),
     allowedMentions: { parse: [] },
   });
 }
 
 async function handleEditConfirm(interaction, messageId, userId, encodedValues, encodedJobs) {
-  await interaction.deferUpdate();
+  return commitRosterEdit(interaction, messageId, userId,
+    () => selectionToSignup(userId, decodeValues(encodedValues), decodeJobs(encodedJobs)));
+}
+
+/**
+ * Saves one person's pick from /managerun's Edit roster (either version). `makeSignup(run)` builds the
+ * sign-up from the saved run; a new or changed pick goes to the back of the line like any other.
+ * `backOnError` adds a Back button to a validation message, for the form version where the form closes.
+ */
+async function commitRosterEdit(interaction, messageId, userId, makeSignup, { backOnError = false } = {}) {
+  if (interaction.isFromMessage()) await interaction.deferUpdate();
+  else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   return withLock(messageId, async () => {
     const run = getRun(messageId);
     if (!run) return interaction.editReply({ content: 'That run no longer exists.', components: [] });
     if (!canManage(interaction, run)) return interaction.editReply({ content: notManagerText(interaction), components: [] });
 
-    const signup = selectionToSignup(userId, decodeValues(encodedValues), decodeJobs(encodedJobs));
-    const check = checkSelection(signup);
-    if (!check.ok) return interaction.editReply({ content: check.problems.join('\n'), components: [] });
+    const signup = makeSignup(run);
+    const check = checkSelection(signup, true);
+    if (!check.ok) {
+      return interaction.editReply({
+        content: check.problems.join('\n'),
+        components: backOnError ? [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`edit:panel:${messageId}`).setLabel('Back').setStyle(ButtonStyle.Secondary),
+        )] : [],
+      });
+    }
 
     // Same as a normal sign-up: a new or changed pick goes to the back of the line.
     const isNew = !run.signups.some((s) => s.userId === userId);
@@ -3902,6 +3946,67 @@ async function handleEditConfirm(interaction, messageId, userId, encodedValues, 
     return interaction.editReply(await editPanel(interaction, finalId, run,
       outcomeText(signup, rendered, false, who)));
   });
+}
+
+/**
+ * "Edit roster (form)": one form instead of the step-by-step picker. Pick the member, their role(s),
+ * and any jobs. Roles in a form come back in menu order rather than click order, so a new flex keeps
+ * the standard order (MT, OT, H1 ...), while an existing sign-up keeps the preference order it had.
+ * Members only: someone who isn't in the server still goes through the original Edit roster.
+ */
+function rosterFormModal(messageId) {
+  const jobOptions = (jobs) => jobs.map((j) => ({ label: j, value: j }));
+  const menu = (id, options, { min = 0, required = false, placeholder = '' } = {}) =>
+    new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder).setRequired(required)
+      .setMinValues(min).setMaxValues(options.length).addOptions(options);
+
+  return new ModalBuilder()
+    .setCustomId(`eform:submit:${messageId}`)
+    .setTitle('Edit roster')
+    .addLabelComponents(
+      new LabelBuilder().setLabel('Who (pick a member)').setUserSelectMenuComponent(
+        new UserSelectMenuBuilder().setCustomId('user').setPlaceholder('Search for a member')
+          .setRequired(true).setMinValues(1).setMaxValues(1),
+      ),
+      new LabelBuilder().setLabel('Role(s): pick one, or several to flex').setStringSelectMenuComponent(
+        menu('roles', [...ROLES, BENCH].map((r) => ({ label: r, value: r })),
+          { min: 1, required: true, placeholder: 'Choose role(s)' }),
+      ),
+      new LabelBuilder().setLabel('Tank jobs (needed for MT/OT)').setStringSelectMenuComponent(
+        menu('tank', jobOptions(TANK_JOBS), { placeholder: 'Tank jobs' }),
+      ),
+      new LabelBuilder().setLabel('DPS jobs for M1/M2 (melee, ranged or caster)').setStringSelectMenuComponent(
+        menu('melee', jobOptions(DPS_JOBS), { placeholder: 'DPS jobs' }),
+      ),
+      new LabelBuilder().setLabel('Healer / ranged jobs (optional)').setStringSelectMenuComponent(
+        menu('other', jobOptions(jobsForRoles(OPTIONAL_JOB_ROLES)), { placeholder: 'Healer and ranged jobs' }),
+      ),
+    );
+}
+
+async function handleRosterFormSubmit(interaction, messageId) {
+  const run = getRun(messageId);
+  if (!run) return interaction.reply(ephemeral('That run no longer exists.'));
+  if (!canManage(interaction, run)) return interaction.reply(ephemeral(notManagerText(interaction)));
+
+  const picked = interaction.fields.getSelectedUsers('user')?.first();
+  if (!picked) return interaction.reply(ephemeral('Pick a member first.'));
+  if (picked.bot) return interaction.reply(ephemeral("Bots can't be added to the roster."));
+
+  const values = (id) => {
+    try {
+      return interaction.fields.getStringSelectValues(id);
+    } catch {
+      return [];
+    }
+  };
+  const roles = values('roles');
+  const jobs = [...values('tank'), ...values('melee'), ...values('other')];
+
+  return commitRosterEdit(interaction, messageId, picked.id, (current) => {
+    const mine = current.signups.find((s) => s.userId === picked.id);
+    return selectionToSignup(picked.id, orderedSelection(mine ? selectionValues(mine) : [], roles), jobs);
+  }, { backOnError: true });
 }
 
 async function handleEditRemove(interaction, messageId) {
@@ -4215,6 +4320,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'manage' && action === 'reschedule-submit') return await handleRescheduleSubmit(interaction, messageId);
       if (ns === 'manage' && action === 'details-submit') return await handleDetailsSubmit(interaction, messageId);
       if (ns === 'edit' && action === 'addname-submit') return await handleAddByNameSubmit(interaction, messageId);
+      if (ns === 'eform' && action === 'submit') return await handleRosterFormSubmit(interaction, messageId);
       if (ns === 'xc' && action === 'submit') return await handleExtraSubmit(interaction, messageId);
       if (ns === 'request' && action === 'submit') return await handleRequestSubmit(interaction);
       if (ns === 'req' && action === 'deny-submit') return await handleRequestDenySubmit(interaction);

@@ -25,15 +25,21 @@ export const BENCH = 'BENCH';
 // for the other roles it's optional.
 export const TANK_JOBS = ['GNB', 'DRK', 'PLD', 'WAR'];
 export const MELEE_JOBS = ['NIN', 'MNK', 'DRG', 'SAM', 'RPR', 'VPR'];
+const RANGED_JOBS = ['BRD', 'MCH', 'DNC'];
+const CASTER_JOBS = ['SMN', 'BLM', 'RDM', 'PCT'];
+/** Any DPS job. Staff (admins, run creators and managers) can put any of these in M1/M2. */
+export const DPS_JOBS = [...MELEE_JOBS, ...RANGED_JOBS, ...CASTER_JOBS];
+// M1/M2 list every DPS job so a roster entry set by staff can show them. Regular sign-ups and typed
+// input still stick to MELEE_JOBS for M1/M2 unless `anyDps` is passed (see parseJobInput/missingJobs).
 export const ROLE_JOBS = {
   MT: TANK_JOBS,
   OT: TANK_JOBS,
   H1: ['WHM', 'AST'],
   H2: ['SCH', 'SGE'],
-  M1: MELEE_JOBS,
-  M2: MELEE_JOBS,
-  R1: ['BRD', 'MCH', 'DNC'],
-  R2: ['SMN', 'BLM', 'RDM', 'PCT'],
+  M1: DPS_JOBS,
+  M2: DPS_JOBS,
+  R1: RANGED_JOBS,
+  R2: CASTER_JOBS,
 };
 export const JOBS = [...new Set(Object.values(ROLE_JOBS).flat())];
 export const REQUIRED_JOB_GROUPS = [
@@ -47,18 +53,25 @@ export const jobsForRoles = (roles) => JOBS.filter((j) => roles.some((r) => ROLE
 
 /**
  * Jobs typed for a role, e.g. "gnb/drk" or "NIN, SAM". `invalid` lists anything that isn't a job
- * for that role.
+ * for that role. M1/M2 only take melee jobs unless `anyDps` is set (staff entering a roster).
  */
-export function parseJobInput(role, text = '') {
+export function parseJobInput(role, text = '', { anyDps = false } = {}) {
   const tokens = [...new Set(text.toUpperCase().split(/[\s,/]+/).filter(Boolean))];
-  const allowed = ROLE_JOBS[role] ?? [];
+  const allowed = (REQUIRED_JOB_GROUPS[1].roles.includes(role) && !anyDps ? MELEE_JOBS : ROLE_JOBS[role]) ?? [];
   return { jobs: allowed.filter((j) => tokens.includes(j)), invalid: tokens.filter((t) => !allowed.includes(t)) };
 }
 
-/** Required job groups (tank/melee) that have a role picked but no job picked yet. */
-export function missingJobs(roles, jobs = []) {
+/**
+ * Required job groups (tank/melee) that have a role picked but no job picked yet. With `anyDps`, an
+ * M1/M2 only needs some DPS job (not specifically a melee one).
+ */
+export function missingJobs(roles, jobs = [], { anyDps = false } = {}) {
   return REQUIRED_JOB_GROUPS
-    .map((g) => ({ ...g, picked: roles.filter((r) => g.roles.includes(r)) }))
+    .map((g) => ({
+      ...g,
+      jobs: anyDps && g.key === 'melee' ? DPS_JOBS : g.jobs,
+      picked: roles.filter((r) => g.roles.includes(r)),
+    }))
     .filter((g) => g.picked.length && !jobs.some((j) => g.jobs.includes(j)));
 }
 
