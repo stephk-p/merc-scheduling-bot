@@ -1550,6 +1550,33 @@ async function resolveClearee(guild, input, fallbackKey) {
 
 const cleareeLabel = (name, jobs, role) => `${name} ` + (jobs.length ? `(${jobs.join('/')}) - ${role}` : role);
 
+/**
+ * The run with its header's clearee section rebuilt from the current roster, so a clearee's role and
+ * jobs in the post's first line follow edits made to their sign-up (Manage Signup or Edit roster).
+ * Only runs made by /createrun and /privaterun know their clearees; anything else comes back unchanged,
+ * as does a clearee who's no longer on the roster.
+ */
+function withCleareeHeader(run, signups) {
+  if (!run.cleareeName || !run.header) return run;
+  const suffix = run.header.match(/ @ <t:-?\d+.*$/s)?.[0];
+  if (!suffix) return run;
+
+  const entry = (key, id, name, pinged) => {
+    const signup = signups.find((s) => s.userId === key);
+    if (!signup) return null;
+    const shown = pinged && id ? `<@${id}>` : name;
+    const role = signup.mode === 'bench' ? 'BENCH' : signup.roles.join('/');
+    return cleareeLabel(shown, signup.jobs ?? [], role);
+  };
+  const main = entry(run.cleareeKey ?? run.cleareeId, run.cleareeId, run.cleareeName, run.cleareePinged);
+  if (!main) return run;
+  const extras = (run.extraClearees ?? []).map((e) => entry(e.key, e.id, e.name, e.pinged));
+  // An extra who was removed keeps their old text rather than guessing, so only rebuild when all are present.
+  if (extras.some((e) => e === null)) return run;
+
+  return { ...run, header: `${run.title} for ${[main, ...extras].join(' & ')}${suffix}` };
+}
+
 // ---------------------------------------------------------------------------
 // Extra clearees (shared by /createrun and /request)
 // ---------------------------------------------------------------------------
@@ -3716,13 +3743,15 @@ async function handleConfirm(interaction, messageId, encodedValues, encodedJobs)
     // A new or changed pick goes to the back of the line. Anyone who signed up earlier keeps
     // priority, so if the pick is held by an earlier sign-up this user is waitlisted.
     const signups = [...others, signup];
-    const rendered = render(run, signups);
+    // If this person is a clearee, the post's first line follows their new role and jobs.
+    const base = withCleareeHeader(run, signups);
+    const rendered = render(base, signups);
     if (rendered.content.length > 2000) {
       return interaction.editReply({ content: 'This run post is full and can\'t fit more sign-ups.', components: [] });
     }
 
     // The saved roster is updated first so the sign-up is never lost, even if editing the post fails.
-    const updated = { ...run, signups, placed: rendered.placed };
+    const updated = { ...base, signups, placed: rendered.placed };
     setRun(messageId, updated);
     await post.edit({ content: rendered.content, allowedMentions: { parse: [] } });
     await interaction.editReply({
@@ -3949,7 +3978,9 @@ async function handleEditConfirm(interaction, messageId, userId, encodedValues, 
  * `backOnError` adds a Back button to a validation message, for the form version where the form closes.
  */
 async function commitRosterEdit(interaction, messageId, userId, makeSignup, { backOnError = false } = {}) {
-  if (interaction.isFromMessage()) await interaction.deferUpdate();
+  // Called from the picker's Confirm button (edits that message) and from the form (a modal, which only
+  // edits the panel it was opened from). isFromMessage() exists on modal submissions but not on buttons.
+  if (interaction.isButton() || interaction.isFromMessage()) await interaction.deferUpdate();
   else await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   return withLock(messageId, async () => {
@@ -3978,6 +4009,7 @@ async function commitRosterEdit(interaction, messageId, userId, makeSignup, { ba
     }
 
     run.signups = signups;
+    run.header = withCleareeHeader(run, signups).header;
     const postId = await updatePost(messageId, run);
     const finalId = postId ?? messageId;
     setRun(finalId, run);
@@ -4263,6 +4295,41 @@ client.on(Events.GuildCreate, async (guild) => {
   if (wantsGuild(guild.id)) await registerInGuild(guild);
 });
 
+/** One line saying what was being handled, for the console log: the command or button/form, who, and where. */
+function describeInteraction(interaction) {
+  const what = interaction.isChatInputCommand?.() ? `/${interaction.commandName}`
+    : interaction.customId ? `${interaction.isModalSubmit?.() ? 'form' : 'component'} "${interaction.customId}"`
+      : interaction.type;
+  return `${what} from ${interaction.user?.tag ?? 'unknown user'} (${interaction.user?.id}) ` +
+    `in guild ${interaction.guildId ?? 'DM'}, channel ${interaction.channelId ?? 'n/a'}`;
+}
+
+/** A plain-language message for the person who hit the error, based on what Discord (or the code) reported. */
+function friendlyError(err) {
+  switch (err?.code) {
+    case 50013:
+      return "I'm missing a permission I need for that. Ask an admin to check my role's permissions " +
+        '(Manage Channels, Manage Roles, Manage Messages and Send Messages).';
+    case 50001:
+      return "I can't see that channel or message. Make sure I have **View Channel** and **Read Message History** there.";
+    case 10003:
+    case 10008:
+      return 'The channel or message I needed no longer exists (it may have been deleted).';
+    case 10062:
+    case 40060:
+      return 'That took too long or was already handled. Please try again.';
+    case 50007:
+      return "I couldn't send a DM (their DMs may be closed).";
+    case 50035:
+      return 'Discord rejected something I tried to send. The details were logged for the admins.';
+    default:
+  }
+  if (err?.status === 429 || err?.name === 'RateLimitError') {
+    return "Discord is slowing me down right now. Please wait a few seconds and try again.";
+  }
+  return 'Something unexpected went wrong on my end. Your change may not have been saved, so check the run and try again.';
+}
+
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
     if (interaction.isAutocomplete()) {
@@ -4379,13 +4446,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'req' && action === 'deny-submit') return await handleRequestDenySubmit(interaction);
     }
   } catch (err) {
-    console.error(err);
+    const ref = Math.random().toString(36).slice(2, 8).toUpperCase();
+    console.error(`[${ref}] Error handling ${describeInteraction(interaction)}:`, err);
     if (interaction.isRepliable()) {
-      const msg = ephemeral('Something went wrong. Make sure I can view this channel and read message history.');
+      const msg = ephemeral(`${friendlyError(err)}\n-# Reference: \`${ref}\` (an admin can find the details in the bot's console)`);
       if (interaction.replied || interaction.deferred) await interaction.followUp(msg).catch(() => {});
       else await interaction.reply(msg).catch(() => {});
     }
   }
 });
+
+// Anything that escapes a handler (a timer, a background task) is logged instead of silently lost.
+process.on('unhandledRejection', (reason) => console.error('Unhandled promise rejection:', reason));
+client.on(Events.Error, (err) => console.error('Discord client error:', err));
 
 client.login(DISCORD_TOKEN);
