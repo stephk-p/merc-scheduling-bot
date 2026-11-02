@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -84,11 +85,13 @@ import {
 import { getStartPromptSettings, setStartPromptEnabled, setStartPromptRole } from './startPrompt.js';
 import { guildSignupDmEnabled, setGuildSignupDm, setUserSignupDm, userWantsSignupDm } from './signupDm.js';
 import { addPrioRole, getPrioRoles, removePrioRole } from './prioRoles.js';
+import { captureConsoleErrors, findError, formatError, recentErrors, recordError } from './errorLog.js';
 import { getLogChannel, setLogChannel } from './logChannels.js';
 import { addLogEntry, setLogMessage } from './runLogs.js';
 import { getMinAmount, getRequest, parseAmount, setMinAmount, setRequest } from './requests.js';
 
 const { DISCORD_TOKEN, GUILD_ID } = process.env;
+captureConsoleErrors();
 // Written by src/launcher.js when /botupdate triggers an update (see confirmBotUpdate).
 const BOT_UPDATE_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data', 'botupdate.json');
 if (!DISCORD_TOKEN) {
@@ -124,6 +127,7 @@ const COMMAND_BLURBS = {
   setlogchannel: 'Set or clear the channel roster activity gets logged to (admins only)',
   request: 'Submit a run request for an overseer to approve or deny',
   signupdm: "Turn the \"you're on the roster\" DM on or off for yourself",
+  errorlog: 'Get the recent error log to help troubleshoot a problem (admins and the bot owner)',
   priorole: 'Choose which roles can be given a prio (guaranteed) slot on a run (admins only)',
   signupdmserver: 'Turn the roster DM on or off for the whole server (admins only)',
   approverequests: 'Approve or deny run requests (the buttons on each request)',
@@ -295,6 +299,13 @@ const commands = [
       o.setName('amount')
         .setDescription('Minimum amount, e.g. 5m (leave blank to remove the minimum)')
         .setMaxLength(50)),
+  new SlashCommandBuilder()
+    .setName('errorlog')
+    .setDescription('Get the recent error log to help troubleshoot a problem (admins and the bot owner)')
+    .addStringOption((o) =>
+      o.setName('ref').setDescription('A specific error reference code, e.g. K3F9QA').setMaxLength(12))
+    .addIntegerOption((o) =>
+      o.setName('count').setDescription('How many recent errors to include (default 5)').setMinValue(1).setMaxValue(25)),
   new SlashCommandBuilder()
     .setName('priorole')
     .setDescription('Choose which roles can be given a prio (guaranteed) slot on a run (admins only)')
@@ -2111,11 +2122,14 @@ async function handleHelp(interaction) {
     if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
       sections.push([
         '**Server admin tools**',
-        ...bullets(['access', 'permissionlist', 'startprompt', 'fixrun', 'setlogchannel', 'requestmin', 'signupdmserver', 'priorole']),
+        ...bullets(['access', 'permissionlist', 'startprompt', 'fixrun', 'setlogchannel', 'requestmin', 'signupdmserver', 'priorole', 'errorlog']),
       ]);
     }
 
-    if (interaction.user.id === BOT_OWNER_ID) sections.push(['**Bot owner**', ...bullets(['botupdate'])]);
+    if (interaction.user.id === BOT_OWNER_ID) {
+      const isAdmin = interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+      sections.push(['**Bot owner**', ...bullets(isAdmin ? ['botupdate'] : ['botupdate', 'errorlog'])]);
+    }
   }
 
   return interaction.reply({
@@ -4295,6 +4309,44 @@ client.on(Events.GuildCreate, async (guild) => {
   if (wantsGuild(guild.id)) await registerInGuild(guild);
 });
 
+/**
+ * /errorlog: the owner sees every recent error, and a server admin sees that server's. Sent as a text
+ * file so full stack traces stay readable and easy to paste. `ref` pulls up one specific error.
+ */
+async function handleErrorLog(interaction) {
+  const isOwner = interaction.user.id === BOT_OWNER_ID;
+  const isAdmin = interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.Administrator);
+  if (!isOwner && !isAdmin) {
+    return interaction.reply(ephemeral('Only server administrators and the bot owner can use `/errorlog`.'));
+  }
+
+  const ref = interaction.options.getString('ref')?.trim();
+  const count = interaction.options.getInteger('count') ?? 5;
+  const scope = isOwner ? {} : { guildId: interaction.guildId };
+
+  let entries;
+  if (ref) {
+    const found = findError(ref);
+    // An admin can only open errors from their own server.
+    entries = found && (isOwner || found.guildId === interaction.guildId) ? [found] : [];
+    if (!entries.length) return interaction.reply(ephemeral(`No error found with reference **${escapeMarkdown(ref)}**.`));
+  } else {
+    entries = recentErrors({ ...scope, limit: count });
+    if (!entries.length) {
+      return interaction.reply(ephemeral(isOwner ? 'No errors have been recorded.' : 'No errors have been recorded for this server.'));
+    }
+  }
+
+  const text = entries.map(formatError).join('\n\n' + '='.repeat(60) + '\n\n');
+  const summary = entries.map((e) => `\`${e.ref}\` <t:${Math.floor(e.at / 1000)}:R> — ${e.name}: ${e.message}`.slice(0, 180)).join('\n');
+  return interaction.reply({
+    content: `Latest ${entries.length} error${entries.length > 1 ? 's' : ''}${isOwner ? '' : ' for this server'}:\n${summary}`.slice(0, 1900),
+    files: [new AttachmentBuilder(Buffer.from(text, 'utf8'), { name: 'errorlog.txt' })],
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+}
+
 /** One line saying what was being handled, for the console log: the command or button/form, who, and where. */
 function describeInteraction(interaction) {
   const what = interaction.isChatInputCommand?.() ? `/${interaction.commandName}`
@@ -4370,6 +4422,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'request': return await handleRequest(interaction);
         case 'requestmin': return await handleRequestMin(interaction);
         case 'signupdm': return await handleSignupDm(interaction);
+        case 'errorlog': return await handleErrorLog(interaction);
         case 'priorole': return await handlePrioRole(interaction);
         case 'signupdmserver': return await handleSignupDmServer(interaction);
         case 'approver': return await handleApprover(interaction);
@@ -4446,10 +4499,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (ns === 'req' && action === 'deny-submit') return await handleRequestDenySubmit(interaction);
     }
   } catch (err) {
-    const ref = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const ref = recordError({
+      where: describeInteraction(interaction),
+      guildId: interaction.guildId ?? null,
+      userId: interaction.user?.id ?? null,
+      error: err,
+    });
     console.error(`[${ref}] Error handling ${describeInteraction(interaction)}:`, err);
     if (interaction.isRepliable()) {
-      const msg = ephemeral(`${friendlyError(err)}\n-# Reference: \`${ref}\` (an admin can find the details in the bot's console)`);
+      const msg = ephemeral(`${friendlyError(err)}\n-# Reference: \`${ref}\` (admins can look it up with \`/errorlog\`)`);
       if (interaction.replied || interaction.deferred) await interaction.followUp(msg).catch(() => {});
       else await interaction.reply(msg).catch(() => {});
     }
@@ -4457,7 +4515,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
 });
 
 // Anything that escapes a handler (a timer, a background task) is logged instead of silently lost.
-process.on('unhandledRejection', (reason) => console.error('Unhandled promise rejection:', reason));
-client.on(Events.Error, (err) => console.error('Discord client error:', err));
+process.on('unhandledRejection', (reason) => {
+  const ref = recordError({ where: 'background task (unhandled rejection)', error: reason });
+  console.error(`[${ref}] Unhandled promise rejection:`, reason);
+});
+client.on(Events.Error, (err) => {
+  const ref = recordError({ where: 'Discord client error', error: err });
+  console.error(`[${ref}] Discord client error:`, err);
+});
 
 client.login(DISCORD_TOKEN);
