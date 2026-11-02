@@ -3303,7 +3303,7 @@ async function handleManageButton(interaction, action, messageId) {
     case 'details':
       return interaction.showModal(detailsModal(messageId, run));
     case 'editform':
-      return interaction.showModal(rosterFormModal(messageId));
+      return interaction.showModal(rosterFormModal(messageId, run));
     case 'edit':
       return interaction.update(await editPanel(interaction, messageId, run));
     case 'delete':
@@ -3776,6 +3776,19 @@ async function handleLeave(interaction) {
 // ---------------------------------------------------------------------------
 // /managerun: Edit roster
 // ---------------------------------------------------------------------------
+/**
+ * Dropdown options for roster entries added by typed name (no Discord account behind them), which the
+ * member picker can never find. Picking one lets a manager change that entry's role and jobs.
+ */
+function typedNameEntries(run) {
+  const labels = labelsFor(run);
+  return run.signups.filter((s) => !isUserId(s.userId)).slice(0, 25).map((s) => ({
+    label: (String(labels[s.userId] ?? s.userId).replace(/\\/g, '').slice(0, 100)) || 'Unnamed',
+    value: s.userId,
+    description: (describeSignup(s) + (s.jobs?.length ? ` (${describeJobs(s)})` : '')).slice(0, 100),
+  }));
+}
+
 async function editPanel(interaction, messageId, run, note = '') {
   const labels = labelsFor(run);
   const ids = run.signups.map((s) => s.userId).filter((id) => !labels[id] && isUserId(id));
@@ -3788,6 +3801,16 @@ async function editPanel(interaction, messageId, run, note = '') {
         .setPlaceholder("Add someone, or change someone's pick"),
     ),
   ];
+  const typed = typedNameEntries(run);
+  if (typed.length) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder().setCustomId(`edit:pick:${messageId}`)
+        .setPlaceholder('Change a pick for someone added by typed name')
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(typed),
+    ));
+  }
   if (run.signups.length) {
     const options = run.signups.slice(0, 25).map((s) => ({
       label: nameOf(s.userId).slice(0, 100),
@@ -3809,7 +3832,8 @@ async function editPanel(interaction, messageId, run, note = '') {
   ));
 
   const intro = `**Editing the roster for run ${run.runId}.** Add someone (or change their pick) with the ` +
-    'first menu, or remove people with the second. Slots, flex moves and the waitlist update like normal sign-ups.';
+    'first menu' + (typed.length ? ', change someone added by typed name with the second' : '') +
+    ', or remove people with the last one. Slots, flex moves and the waitlist update like normal sign-ups.';
   const content = [note, intro, '', rosterCopyContent(run, render(run).content)].filter((l, i) => i || l).join('\n');
   return { content: content.slice(0, 2000), components: rows, allowedMentions: { parse: [] } };
 }
@@ -3840,13 +3864,32 @@ async function handleEditAdd(interaction, messageId) {
   if (interaction.users.get(userId)?.bot) {
     return interaction.update(await editPanel(interaction, messageId, run, "⚠️ Bots can't be added to the roster."));
   }
+  return showEditPicker(interaction, messageId, run, userId);
+}
+
+/** Someone added by typed name was picked from the panel's dropdown: open the same role/job picker for them. */
+async function handleEditPickTyped(interaction, messageId) {
+  const run = getRun(messageId);
+  if (!run) return interaction.update({ content: 'That run no longer exists.', components: [] });
+  if (!canManage(interaction, run)) return interaction.update({ content: notManagerText(interaction), components: [] });
+
+  const userId = interaction.values[0];
+  if (!run.signups.some((s) => s.userId === userId)) {
+    return interaction.update(await editPanel(interaction, messageId, run, '⚠️ That person is no longer on the roster.'));
+  }
+  return showEditPicker(interaction, messageId, run, userId);
+}
+
+/** The role/job picker for one person (a member or a typed-name entry) from either way of choosing them. */
+function showEditPicker(interaction, messageId, run, userId) {
   const mine = run.signups.find((s) => s.userId === userId);
   const { status } = viewFor(run, userId);
+  const label = labelsFor(run)[userId] ?? `<@${userId}>`;
   const intro = mine
-    ? `<@${userId}> is signed up as **${describeSignup(mine)}**` +
+    ? `${label} is signed up as **${describeSignup(mine)}**` +
       (mine.jobs?.length ? ` (${describeJobs(mine)})` : '') +
       '. Saving a new pick replaces that and puts them at the back of the line.'
-    : `Pick the role(s) and jobs for <@${userId}>.`;
+    : `Pick the role(s) and jobs for ${label}.`;
   return interaction.update({
     content: intro,
     components: rolePicker('edit', `${messageId}:${userId}`, status,
@@ -3949,49 +3992,48 @@ async function commitRosterEdit(interaction, messageId, userId, makeSignup, { ba
 }
 
 /**
- * "Edit roster (form)": one form instead of the step-by-step picker. Pick the member, their role(s),
- * and any jobs. Roles in a form come back in menu order rather than click order, so a new flex keeps
- * the standard order (MT, OT, H1 ...), while an existing sign-up keeps the preference order it had.
- * Members only: someone who isn't in the server still goes through the original Edit roster.
+ * "Edit roster (form)": one form instead of the step-by-step picker. Pick the member (or someone who
+ * was added by typed name), their role(s), and their jobs. Roles in a form come back in menu order
+ * rather than click order, so a new flex keeps the standard order (MT, OT, H1 ...), while an existing
+ * sign-up keeps the preference order it had. The jobs menu lists every job and the usual rules are
+ * checked on submit: a tank job for MT/OT and a DPS job for M1/M2.
  */
-function rosterFormModal(messageId) {
-  const jobOptions = (jobs) => jobs.map((j) => ({ label: j, value: j }));
+function rosterFormModal(messageId, run) {
   const menu = (id, options, { min = 0, required = false, placeholder = '' } = {}) =>
     new StringSelectMenuBuilder().setCustomId(id).setPlaceholder(placeholder).setRequired(required)
       .setMinValues(min).setMaxValues(options.length).addOptions(options);
 
-  return new ModalBuilder()
-    .setCustomId(`eform:submit:${messageId}`)
-    .setTitle('Edit roster')
-    .addLabelComponents(
-      new LabelBuilder().setLabel('Who (pick a member)').setUserSelectMenuComponent(
-        new UserSelectMenuBuilder().setCustomId('user').setPlaceholder('Search for a member')
-          .setRequired(true).setMinValues(1).setMaxValues(1),
-      ),
-      new LabelBuilder().setLabel('Role(s): pick one, or several to flex').setStringSelectMenuComponent(
-        menu('roles', [...ROLES, BENCH].map((r) => ({ label: r, value: r })),
-          { min: 1, required: true, placeholder: 'Choose role(s)' }),
-      ),
-      new LabelBuilder().setLabel('Tank jobs (needed for MT/OT)').setStringSelectMenuComponent(
-        menu('tank', jobOptions(TANK_JOBS), { placeholder: 'Tank jobs' }),
-      ),
-      new LabelBuilder().setLabel('DPS jobs for M1/M2 (melee, ranged or caster)').setStringSelectMenuComponent(
-        menu('melee', jobOptions(DPS_JOBS), { placeholder: 'DPS jobs' }),
-      ),
-      new LabelBuilder().setLabel('Healer / ranged jobs (optional)').setStringSelectMenuComponent(
-        menu('other', jobOptions(jobsForRoles(OPTIONAL_JOB_ROLES)), { placeholder: 'Healer and ranged jobs' }),
-      ),
-    );
+  // Typed-name people can't be found with the member picker, so they get their own dropdown.
+  const typed = typedNameEntries(run);
+  const fields = [
+    new LabelBuilder().setLabel(typed.length ? 'Who: pick a member' : 'Who (pick a member)').setUserSelectMenuComponent(
+      new UserSelectMenuBuilder().setCustomId('user').setPlaceholder('Search for a member')
+        .setRequired(!typed.length).setMinValues(typed.length ? 0 : 1).setMaxValues(1),
+    ),
+  ];
+  if (typed.length) {
+    fields.push(new LabelBuilder().setLabel('Or someone added by typed name').setStringSelectMenuComponent(
+      new StringSelectMenuBuilder().setCustomId('person').setPlaceholder('Pick a typed-name entry').setRequired(false)
+        .setMinValues(0).setMaxValues(1).addOptions(typed),
+    ));
+  }
+  fields.push(
+    new LabelBuilder().setLabel('Role(s): pick one, or several to flex').setStringSelectMenuComponent(
+      menu('roles', [...ROLES, BENCH].map((r) => ({ label: r, value: r })),
+        { min: 1, required: true, placeholder: 'Choose role(s)' }),
+    ),
+    new LabelBuilder().setLabel('Jobs (tank for MT/OT, DPS for M1/M2)').setStringSelectMenuComponent(
+      menu('jobs', JOBS.map((j) => ({ label: j, value: j })), { placeholder: 'Choose jobs' }),
+    ),
+  );
+
+  return new ModalBuilder().setCustomId(`eform:submit:${messageId}`).setTitle('Edit roster').addLabelComponents(...fields);
 }
 
 async function handleRosterFormSubmit(interaction, messageId) {
   const run = getRun(messageId);
   if (!run) return interaction.reply(ephemeral('That run no longer exists.'));
   if (!canManage(interaction, run)) return interaction.reply(ephemeral(notManagerText(interaction)));
-
-  const picked = interaction.fields.getSelectedUsers('user')?.first();
-  if (!picked) return interaction.reply(ephemeral('Pick a member first.'));
-  if (picked.bot) return interaction.reply(ephemeral("Bots can't be added to the roster."));
 
   const values = (id) => {
     try {
@@ -4000,12 +4042,22 @@ async function handleRosterFormSubmit(interaction, messageId) {
       return [];
     }
   };
-  const roles = values('roles');
-  const jobs = [...values('tank'), ...values('melee'), ...values('other')];
+  const picked = interaction.fields.getSelectedUsers('user')?.first();
+  const typedKey = values('person')[0];
+  if (picked && typedKey) return interaction.reply(ephemeral('Pick either a member or a typed-name entry, not both.'));
+  if (!picked && !typedKey) return interaction.reply(ephemeral('Pick a member or a typed-name entry first.'));
+  if (picked?.bot) return interaction.reply(ephemeral("Bots can't be added to the roster."));
+  if (typedKey && !run.signups.some((s) => s.userId === typedKey)) {
+    return interaction.reply(ephemeral('That entry is no longer on the roster.'));
+  }
 
-  return commitRosterEdit(interaction, messageId, picked.id, (current) => {
-    const mine = current.signups.find((s) => s.userId === picked.id);
-    return selectionToSignup(picked.id, orderedSelection(mine ? selectionValues(mine) : [], roles), jobs);
+  const userId = picked?.id ?? typedKey;
+  const roles = values('roles');
+  const jobs = values('jobs');
+
+  return commitRosterEdit(interaction, messageId, userId, (current) => {
+    const mine = current.signups.find((s) => s.userId === userId);
+    return selectionToSignup(userId, orderedSelection(mine ? selectionValues(mine) : [], roles), jobs);
   }, { backOnError: true });
 }
 
@@ -4301,6 +4353,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isStringSelectMenu()) {
       const [ns, action, messageId, userId] = interaction.customId.split(':');
       if (ns === 'edit' && action === 'remove') return await handleEditRemove(interaction, messageId);
+      if (ns === 'edit' && action === 'pick') return await handleEditPickTyped(interaction, messageId);
       if (ns === 'edit' && ['select', 'jobs-tank', 'jobs-melee', 'jobs-opt'].includes(action)) {
         return await handleSelect(interaction, messageId, action, userId);
       }
