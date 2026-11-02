@@ -81,6 +81,7 @@ import {
   revokeUser,
 } from './permissions.js';
 import { getStartPromptSettings, setStartPromptEnabled, setStartPromptRole } from './startPrompt.js';
+import { guildSignupDmEnabled, setGuildSignupDm, setUserSignupDm, userWantsSignupDm } from './signupDm.js';
 import { getLogChannel, setLogChannel } from './logChannels.js';
 import { addLogEntry, setLogMessage } from './runLogs.js';
 import { getMinAmount, getRequest, parseAmount, setMinAmount, setRequest } from './requests.js';
@@ -120,6 +121,8 @@ const COMMAND_BLURBS = {
   fixrun: "Repost a missing roster copy in any run's private channel (admins only)",
   setlogchannel: 'Set or clear the channel roster activity gets logged to (admins only)',
   request: 'Submit a run request for an overseer to approve or deny',
+  signupdm: "Turn the \"you're on the roster\" DM on or off for yourself",
+  signupdmserver: 'Turn the roster DM on or off for the whole server (admins only)',
   approverequests: 'Approve or deny run requests (the buttons on each request)',
   approver: 'Let a role or member approve/deny run requests, or take it away (admins and overseers)',
   botupdate: 'Check GitHub for an update and restart if there is one (bot owner only)',
@@ -282,6 +285,19 @@ const commands = [
       o.setName('amount')
         .setDescription('Minimum amount, e.g. 5m (leave blank to remove the minimum)')
         .setMaxLength(50)),
+  new SlashCommandBuilder()
+    .setName('signupdm')
+    .setDescription("Turn the \"you're on the roster\" DM on or off for yourself")
+    .addStringOption((o) =>
+      o.setName('setting').setDescription('On or off').setRequired(true)
+        .addChoices({ name: 'On', value: 'on' }, { name: 'Off', value: 'off' })),
+  new SlashCommandBuilder()
+    .setName('signupdmserver')
+    .setDescription('Turn the "you\'re on the roster" DM on or off for this whole server (admins only)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption((o) =>
+      o.setName('setting').setDescription('On or off').setRequired(true)
+        .addChoices({ name: 'On', value: 'on' }, { name: 'Off', value: 'off' })),
   new SlashCommandBuilder()
     .setName('approver')
     .setDescription('Let a role or member approve/deny run requests, or take it away')
@@ -1270,6 +1286,42 @@ async function sendCompletionAnnouncement(run, deleteAt) {
   }
 }
 
+const DAY_BEFORE_DM_MAX_MS = 24 * 60 * 60 * 1000;
+const DAY_BEFORE_DM_MIN_MS = 60 * 60 * 1000;
+
+/**
+ * About a day before a run starts, DMs everyone holding an active roster slot (not waitlist/bench) to
+ * tell them when it is. Skipped for servers or people who turned it off and for plain-text names. Each
+ * person is only told once per run (reset if the run is rescheduled). Anyone placed after the 24-hour
+ * mark is told on the next sweep, but nothing goes out in the last hour, where the 30-minute ping and
+ * DM reminders already cover it. Never throws.
+ */
+async function sendDayBeforeDms(messageId, run, msUntilStart) {
+  if (msUntilStart > DAY_BEFORE_DM_MAX_MS || msUntilStart < DAY_BEFORE_DM_MIN_MS) return;
+  if (!guildSignupDmEnabled(run.guildId)) return;
+
+  const { result } = render(run);
+  const active = ROLES.map((r) => result.slots[r]?.userId).filter(isUserId);
+  for (const userId of active) {
+    if (run.signupDmSent?.includes(userId) || !userWantsSignupDm(userId)) continue;
+
+    // Marked first so a failed DM (closed DMs) isn't retried every minute.
+    run.signupDmSent = [...(run.signupDmSent ?? []), userId];
+    setRun(messageId, run);
+    try {
+      const user = await client.users.fetch(userId);
+      const link = run.privateChannelId ? `\nChannel: <#${run.privateChannelId}>` : '';
+      await user.send(
+        `📅 Heads up: you're on the roster for **${runName(run)}**, scheduled for ` +
+        `<t:${run.startsAt}:F> (<t:${run.startsAt}:R>).${link}\n` +
+        '-# Turn these off any time with `/signupdm`.',
+      );
+    } catch (err) {
+      console.error(`Couldn't send the day-before DM to ${userId} for run ${run.runId}:`, err.message);
+    }
+  }
+}
+
 /** DMs one user a reminder for a run they're signed up for. */
 async function sendDmReminder(run, userId, minutes) {
   const user = await client.users.fetch(userId);
@@ -1362,6 +1414,8 @@ async function sweepReminders() {
       }
       continue;
     }
+
+    await sendDayBeforeDms(messageId, run, msUntilStart);
 
     const rolePing = RUN_START_PING[run.guildId] ?? DEFAULT_RUN_START_PING;
     if (run.privateChannelId && !run.rolePingSent &&
@@ -1870,7 +1924,7 @@ async function handleHelp(interaction) {
       'Press **Sign up** on a run post, pick one or more roles in the order you\'d take them (add jobs if asked), ' +
         'then press **Confirm**. Picking several roles makes you a flex: you get the first one that\'s free and move ' +
         'up automatically when a better one opens. Press **Leave** to drop out any time.',
-      ...bullets(['myruns']),
+      ...bullets(['myruns', 'signupdm']),
     ];
     if (!inGuild || hasCommandAccess(interaction, 'setpreference', 'preferenceRoles')) {
       signUp.push(...bullets(['setpreference']));
@@ -1902,7 +1956,7 @@ async function handleHelp(interaction) {
     if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
       sections.push([
         '**Server admin tools**',
-        ...bullets(['access', 'permissionlist', 'startprompt', 'fixrun', 'setlogchannel', 'requestmin']),
+        ...bullets(['access', 'permissionlist', 'startprompt', 'fixrun', 'setlogchannel', 'requestmin', 'signupdmserver']),
       ]);
     }
 
@@ -2387,6 +2441,27 @@ async function handleRequestDenySubmit(interaction) {
 }
 
 /** /approver: admins and anyone who can use /createrun (e.g. overseers) hand out or take away the approve/deny ability. */
+/** /signupdm: a person turns their own roster DM on or off. */
+async function handleSignupDm(interaction) {
+  const on = interaction.options.getString('setting', true) === 'on';
+  setUserSignupDm(interaction.user.id, on);
+  const serverNote = interaction.inGuild() && !guildSignupDmEnabled(interaction.guildId)
+    ? '\n(An admin has turned this off for the whole server, so you won\'t get it here either way.)' : '';
+  return interaction.reply(ephemeral(on
+    ? `✅ You'll get a DM about a day before a run you're on the roster for.${serverNote}`
+    : `➖ You won't get roster DMs anymore. Turn them back on any time with \`/signupdm setting:On\`.`));
+}
+
+/** /signupdmserver: an admin turns the roster DM on or off for everyone in the server. */
+async function handleSignupDmServer(interaction) {
+  if (!(await requireAdmin(interaction, 'signupdmserver'))) return undefined;
+  const on = interaction.options.getString('setting', true) === 'on';
+  setGuildSignupDm(interaction.guildId, on);
+  return interaction.reply(ephemeral(on
+    ? '✅ Roster DMs are on for this server. People can still turn them off for themselves with `/signupdm`.'
+    : '➖ Roster DMs are off for this whole server.'));
+}
+
 async function handleApprover(interaction) {
   if (!interaction.inGuild()) return interaction.reply(ephemeral('This command only works in a server.'));
   if (!hasCommandAccess(interaction, 'createrun')) {
@@ -3120,6 +3195,7 @@ async function handleRescheduleSubmit(interaction, messageId) {
     run.rescheduled = true;
     run.channelDeleteAt = null;
     run.rolePingSent = false;
+    run.signupDmSent = [];
     run.dmRemindersSent = {};
     run.startPromptSent = false;
     const postId = await updatePost(messageId, run);
@@ -3176,6 +3252,7 @@ async function handleDetailsSubmit(interaction, messageId) {
         : `${newHeader} ${stamp}`;
       run.startsAt = parsed.ts;
       run.rolePingSent = false;
+      run.signupDmSent = [];
       run.dmRemindersSent = {};
       run.startPromptSent = false;
     }
@@ -3931,6 +4008,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'setlogchannel': return await handleSetLogChannel(interaction);
         case 'request': return await handleRequest(interaction);
         case 'requestmin': return await handleRequestMin(interaction);
+        case 'signupdm': return await handleSignupDm(interaction);
+        case 'signupdmserver': return await handleSignupDmServer(interaction);
         case 'approver': return await handleApprover(interaction);
         case 'botupdate': return await handleBotUpdate(interaction);
         default: return;
