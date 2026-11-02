@@ -82,6 +82,7 @@ import {
 } from './permissions.js';
 import { getStartPromptSettings, setStartPromptEnabled, setStartPromptRole } from './startPrompt.js';
 import { guildSignupDmEnabled, setGuildSignupDm, setUserSignupDm, userWantsSignupDm } from './signupDm.js';
+import { addPrioRole, getPrioRoles, removePrioRole } from './prioRoles.js';
 import { getLogChannel, setLogChannel } from './logChannels.js';
 import { addLogEntry, setLogMessage } from './runLogs.js';
 import { getMinAmount, getRequest, parseAmount, setMinAmount, setRequest } from './requests.js';
@@ -122,6 +123,7 @@ const COMMAND_BLURBS = {
   setlogchannel: 'Set or clear the channel roster activity gets logged to (admins only)',
   request: 'Submit a run request for an overseer to approve or deny',
   signupdm: "Turn the \"you're on the roster\" DM on or off for yourself",
+  priorole: 'Choose which roles can be given a prio (guaranteed) slot on a run (admins only)',
   signupdmserver: 'Turn the roster DM on or off for the whole server (admins only)',
   approverequests: 'Approve or deny run requests (the buttons on each request)',
   approver: 'Let a role or member approve/deny run requests, or take it away (admins and overseers)',
@@ -135,6 +137,8 @@ const COMMAND_BLURBS = {
 // ---------------------------------------------------------------------------
 // Modals support at most 5 text inputs, so that's the most extra clearees a /createrun form can ask for.
 const MAX_EXTRA_CLEAREES = 5;
+// Most prio (guaranteed-slot) mercs a /createrun can add.
+const MAX_PRIO = 5;
 
 function runCommand(name, description) {
   return new SlashCommandBuilder()
@@ -168,6 +172,11 @@ function runCommand(name, description) {
         .setDescription("Extra clearees? Fill in each one's name/role/job in a form after you submit")
         .setMinValue(1)
         .setMaxValue(MAX_EXTRA_CLEAREES))
+    .addIntegerOption((o) =>
+      o.setName('prio')
+        .setDescription('Guaranteed slots for mercs (not clearees)? Fill in each one in a form after you submit')
+        .setMinValue(1)
+        .setMaxValue(MAX_PRIO))
     .addStringOption((o) =>
       o.setName('timezone')
         .setDescription('Your timezone (only needed once; it gets remembered)')
@@ -285,6 +294,14 @@ const commands = [
       o.setName('amount')
         .setDescription('Minimum amount, e.g. 5m (leave blank to remove the minimum)')
         .setMaxLength(50)),
+  new SlashCommandBuilder()
+    .setName('priorole')
+    .setDescription('Choose which roles can be given a prio (guaranteed) slot on a run (admins only)')
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+    .addStringOption((o) =>
+      o.setName('action').setDescription('What to do').setRequired(true)
+        .addChoices({ name: 'Add a role', value: 'add' }, { name: 'Remove a role', value: 'remove' }, { name: 'Show the list', value: 'list' }))
+    .addRoleOption((o) => o.setName('role').setDescription('The role (needed for add and remove)')),
   new SlashCommandBuilder()
     .setName('signupdm')
     .setDescription("Turn the \"you're on the roster\" DM on or off for yourself")
@@ -1547,7 +1564,35 @@ function stashExtras(state) {
   return token;
 }
 
-function extraClearModal(token, index, total) {
+function extraClearModal(token, index, total, prio = false) {
+  if (prio) {
+    // Prio mercs must be real server members (they hold a normal merc slot), so there's no typed-name box.
+    return new ModalBuilder()
+      .setCustomId(`xc:submit:${token}`)
+      .setTitle(`Prio merc ${index}${total ? ` of ${total}` : ''}`)
+      .addLabelComponents(
+        new LabelBuilder()
+          .setLabel('Pick the merc from the server list')
+          .setUserSelectMenuComponent(
+            new UserSelectMenuBuilder()
+              .setCustomId('user')
+              .setPlaceholder('Search for a member')
+              .setRequired(true)
+              .setMinValues(1)
+              .setMaxValues(1),
+          ),
+        new LabelBuilder()
+          .setLabel('Role and job(s)')
+          .setTextInputComponent(
+            new TextInputBuilder()
+              .setCustomId('rolejob')
+              .setStyle(TextInputStyle.Short)
+              .setPlaceholder('e.g. H1, WHM')
+              .setRequired(true)
+              .setMaxLength(100),
+          ),
+      );
+  }
   return new ModalBuilder()
     .setCustomId(`xc:submit:${token}`)
     .setTitle(`Extra clearee ${index}${total ? ` of ${total}` : ''}`)
@@ -1580,6 +1625,19 @@ function extraClearModal(token, index, total) {
     );
 }
 
+/** Parses "H1, WHM" into a role and its jobs, rejecting roles already taken. Returns { role, jobs } or { error }. */
+function parseRoleJob(text, usedRoles) {
+  const [roleRaw, ...jobTokens] = text.trim().split(/[\s,/]+/).filter(Boolean);
+  const role = roleRaw?.toUpperCase();
+  if (!ROLES.includes(role)) {
+    return { error: `Start with a role (${ROLES.join('/')}) then their job(s), e.g. "H1, WHM".` };
+  }
+  if (usedRoles.has(role)) return { error: `Two people can't both have the **${role}** slot.` };
+  const check = checkJobInput(role, jobTokens.join('/'), 'job', missingJobs([role], []).length > 0);
+  if (check.error) return { error: check.error };
+  return { role, jobs: check.jobs };
+}
+
 /** Validates one extra-clearee form. Returns { extra } or { error }. */
 function readExtraClearee(interaction, usedRoles) {
   const picked = interaction.fields.getSelectedUsers('user')?.first();
@@ -1588,26 +1646,42 @@ function readExtraClearee(interaction, usedRoles) {
   const name = picked ? `<@${picked.id}>` : noMassPing(interaction.fields.getTextInputValue('name').trim());
   if (!name) return { error: 'Pick a member from the list, or type a name.' };
 
-  const [roleRaw, ...jobTokens] = interaction.fields.getTextInputValue('rolejob').trim().split(/[\s,/]+/).filter(Boolean);
-  const role = roleRaw?.toUpperCase();
-  if (!ROLES.includes(role)) {
-    return { error: `Start with a role (${ROLES.join('/')}) then their job(s), e.g. "H1, WHM".` };
+  const parsed = parseRoleJob(interaction.fields.getTextInputValue('rolejob'), usedRoles);
+  if (parsed.error) return { error: parsed.error };
+  return { extra: { name, role: parsed.role, jobs: parsed.jobs } };
+}
+
+/** Validates one prio-merc form: a server member holding an allowed role, plus their role/job. */
+async function readPrioMerc(interaction, usedRoles, usedIds) {
+  const picked = interaction.fields.getSelectedUsers('user')?.first();
+  if (!picked) return { error: 'Pick a member from the list.' };
+  if (picked.bot) return { error: "Bots can't hold a slot." };
+  if (usedIds.has(picked.id)) return { error: `<@${picked.id}> is already in this run.` };
+
+  const member = await interaction.guild.members.fetch(picked.id).catch(() => null);
+  if (!member) return { error: `<@${picked.id}> isn't in this server.` };
+  const allowed = getPrioRoles(interaction.guildId);
+  if (allowed.length && !allowed.some((id) => member.roles.cache.has(id))) {
+    return { error: `<@${picked.id}> needs one of these roles for a prio slot: ${allowed.map((id) => `<@&${id}>`).join(', ')}.` };
   }
-  if (usedRoles.has(role)) return { error: `Two clearees can't both have the **${role}** slot.` };
-  const check = checkJobInput(role, jobTokens.join('/'), 'job', missingJobs([role], []).length > 0);
-  if (check.error) return { error: check.error };
-  return { extra: { name, role, jobs: check.jobs } };
+
+  const parsed = parseRoleJob(interaction.fields.getTextInputValue('rolejob'), usedRoles);
+  if (parsed.error) return { error: parsed.error };
+  return { prio: { id: picked.id, role: parsed.role, jobs: parsed.jobs } };
 }
 
 const extraLine = (e) => `${e.name} - ${e.role}${e.jobs.length ? ` (${e.jobs.join('/')})` : ''}`;
 
 function extraPrompt(token, state, content) {
+  const prio = state.phase === 'prio';
+  const done = prio ? state.prios.length : state.extras.length;
+  const total = prio ? state.prioTotal : state.total;
   const row = new ActionRowBuilder();
-  if (state.extras.length < state.total) {
+  if (done < total) {
     row.addComponents(new ButtonBuilder().setCustomId(`xc:next:${token}`)
-      .setLabel(`Add extra clearee ${state.extras.length + 1}`).setStyle(ButtonStyle.Primary));
+      .setLabel(`Add ${prio ? 'prio merc' : 'extra clearee'} ${done + 1}`).setStyle(ButtonStyle.Primary));
   }
-  if (state.flexible && state.extras.length > 0) {
+  if (state.flexible && !prio && state.extras.length > 0) {
     row.addComponents(new ButtonBuilder().setCustomId(`xc:done:${token}`).setLabel('Done').setStyle(ButtonStyle.Success));
   }
   return { content, components: row.components.length ? [row] : [], allowedMentions: { parse: [] } };
@@ -1620,20 +1694,41 @@ async function handleExtraSubmit(interaction, token) {
     : interaction.reply({ ...payload, flags: MessageFlags.Ephemeral }));
   if (!state) return respond({ content: 'That took too long. Start again.', components: [] });
 
-  const used = new Set([state.mainRole, ...state.extras.map((e) => e.role)]);
-  const read = readExtraClearee(interaction, used);
-  if (read.error) {
-    // Same button reopens the same form, so a typo doesn't lose the clearees already entered.
-    return respond({
-      content: `⚠️ ${read.error}`,
-      components: [new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`xc:next:${token}`).setLabel('Try again').setStyle(ButtonStyle.Primary),
-      )],
-    });
+  const retry = (error) => respond({
+    // Same button reopens the same form, so a typo doesn't lose the people already entered.
+    content: `⚠️ ${error}`,
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`xc:next:${token}`).setLabel('Try again').setStyle(ButtonStyle.Primary),
+    )],
+    allowedMentions: { parse: [] },
+  });
+
+  if (state.phase === 'prio') {
+    const usedRoles = new Set([state.mainRole, ...state.extras.map((e) => e.role), ...state.prios.map((p) => p.role)]);
+    const usedIds = new Set(state.prios.map((p) => p.id));
+    const read = await readPrioMerc(interaction, usedRoles, usedIds);
+    if (read.error) return retry(read.error);
+
+    state.prios.push(read.prio);
+    if (state.prios.length >= state.prioTotal) return finishExtras(interaction, token, state, interaction.isFromMessage());
+    return respond(extraPrompt(token, state,
+      `✅ Saved prio merc ${state.prios.length}: <@${read.prio.id}> - ${read.prio.role}.`));
   }
 
+  const used = new Set([state.mainRole, ...state.extras.map((e) => e.role)]);
+  const read = readExtraClearee(interaction, used);
+  if (read.error) return retry(read.error);
+
   state.extras.push(read.extra);
-  if (state.extras.length >= state.total) return finishExtras(interaction, token, state, interaction.isFromMessage());
+  if (state.extras.length >= state.total) {
+    // All extra clearees are in; the prio mercs (if any were asked for) come next.
+    if (state.prioTotal > 0) {
+      state.phase = 'prio';
+      return respond(extraPrompt(token, state, `✅ Saved extra clearee ${state.extras.length}: ${extraLine(read.extra)}.\n` +
+        `Now add the prio mercs (${state.prioTotal}).`));
+    }
+    return finishExtras(interaction, token, state, interaction.isFromMessage());
+  }
   return respond(extraPrompt(token, state, `✅ Saved extra clearee ${state.extras.length}: ${extraLine(read.extra)}.`));
 }
 
@@ -1641,6 +1736,9 @@ async function handleExtraButton(interaction, action, token) {
   const state = pendingExtras.get(token);
   if (!state) return interaction.update({ content: 'That took too long. Start again.', components: [] });
   if (action === 'next') {
+    if (state.phase === 'prio') {
+      return interaction.showModal(extraClearModal(token, state.prios.length + 1, state.prioTotal, true));
+    }
     return interaction.showModal(extraClearModal(token, state.extras.length + 1, state.flexible ? null : state.total));
   }
   if (action === 'done') return finishExtras(interaction, token, state, true);
@@ -1663,7 +1761,7 @@ async function finishExtras(interaction, token, state, fromMessage) {
   } else {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   }
-  return finishCreateRun(interaction, state.ctx, state.extras);
+  return finishCreateRun(interaction, state.ctx, state.extras, state.prios ?? []);
 }
 
 async function handleCreateRun(interaction, { test = false, noPing = false, requiredChannelId = null } = {}) {
@@ -1677,6 +1775,7 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
   const note = noteInput ? noMassPing(noteInput) : null;
   const tzInput = interaction.options.getString('timezone');
   const extraCount = interaction.options.getInteger('extra_clearees') ?? 0;
+  const prioCount = interaction.options.getInteger('prio') ?? 0;
 
   if (!interaction.inGuild()) {
     return interaction.reply(ephemeral('This command only works in a server.'));
@@ -1711,9 +1810,15 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
 
   // A modal must be the interaction's first response, so this can't be deferred first — the heavier
   // work (resolving clearees, creating the channel, posting) happens once the form comes back.
-  if (extraCount > 0) {
-    const token = stashExtras({ kind: 'createrun', ctx, mainRole: role, extras: [], total: extraCount, flexible: false });
-    return interaction.showModal(extraClearModal(token, 1, extraCount));
+  if (extraCount > 0 || prioCount > 0) {
+    const firstPhase = extraCount > 0 ? 'extra' : 'prio';
+    const token = stashExtras({
+      kind: 'createrun', ctx, mainRole: role, extras: [], prios: [],
+      total: extraCount, prioTotal: prioCount, flexible: false, phase: firstPhase,
+    });
+    return interaction.showModal(firstPhase === 'extra'
+      ? extraClearModal(token, 1, extraCount)
+      : extraClearModal(token, 1, prioCount, true));
   }
 
   // Reply privately to the creator. The run itself is sent as a normal message so the ping
@@ -1726,7 +1831,7 @@ async function handleCreateRun(interaction, { test = false, noPing = false, requ
  * Resolves clearees, creates the private channel and posts the run. `extras` is already-validated
  * `{ name, role, jobs }` entries beyond the main clearee (from the form, or none at all).
  */
-async function finishCreateRun(interaction, ctx, extras) {
+async function finishCreateRun(interaction, ctx, extras, prios = []) {
   const { amount, text, cleareeInput, role, jobs, note, parsed, test, noPing, requiredChannelId } = ctx;
   void requiredChannelId; // already checked in handleCreateRun before this runs
   // /privaterun: no public sign-up post. The roster lives only in the run's private channel and is
@@ -1749,6 +1854,10 @@ async function finishCreateRun(interaction, ctx, extras) {
 
   // Nobody can be the clearee for two different slots.
   const memberIds = [clearee, ...resolvedExtras].map((c) => c.member?.id).filter(Boolean);
+  if (prios.some((p) => memberIds.includes(p.id))) {
+    return interaction.editReply("A prio merc can't also be a clearee on the same run. Pick someone else.");
+  }
+  memberIds.push(...prios.map((p) => p.id));
   if (new Set(memberIds).size !== memberIds.length) {
     return interaction.editReply("The same person can't be the clearee for two different slots. Pick someone else.");
   }
@@ -1784,6 +1893,8 @@ async function finishCreateRun(interaction, ctx, extras) {
     signups: [
       { userId: cleareeKey, mode: 'firm', roles: [role], jobs },
       ...extraInfo.map((e) => ({ userId: e.key, mode: 'firm', roles: [e.role], jobs: e.jobs })),
+      // Prio mercs sit right after the clearees, so they hold their slots ahead of anyone who signs up later.
+      ...prios.map((p) => ({ userId: p.id, mode: 'firm', roles: [p.role], jobs: p.jobs })),
     ],
     placed: {},
     status: 'open',
@@ -1799,6 +1910,7 @@ async function finishCreateRun(interaction, ctx, extras) {
     cleareeName,
     cleareePinged: pingMain,
     extraClearees: extraInfo.map((e) => ({ id: e.member?.id ?? null, key: e.key, name: e.name, pinged: e.pinged })),
+    prioIds: prios.map((p) => p.id),
   };
 
   // /createrun-test: merc-run-<id>. /createrun: amount, text, clearee and day, e.g. 5m-m4s-clear-stephk-sep-28.
@@ -1825,6 +1937,7 @@ async function finishCreateRun(interaction, ctx, extras) {
     const pingedUsers = [
       ...(pingMain ? [cleareeMember.id] : []),
       ...extraInfo.filter((e) => e.pinged).map((e) => e.member.id),
+      ...prios.map((p) => p.id),
     ];
     post = await channel.send({
       content: rendered.content,
@@ -1886,10 +1999,14 @@ async function finishCreateRun(interaction, ctx, extras) {
     done += `\n⚠️ I couldn't give ${accessFailed.map((id) => `<@${id}>`).join(', ')} access to the private channel ` +
       "(check my Manage Roles / Manage Channels permissions and that I can see the category). I'll keep retrying every minute.";
   }
+  if (prios.length) {
+    done += `\nPrio slot${prios.length > 1 ? 's' : ''}: ${prios.map((p) => `<@${p.id}> (${p.role})`).join(', ')}.`;
+  }
   await interaction.editReply({ content: done, allowedMentions: { parse: [] } });
   await logRun(run,
     `🆕 ${interaction.user} created this ${privateOnly ? 'private run' : 'run'} for ${cleareeName} in ` +
-    `<#${privateChannel.id}>${ctx.requestedBy ? ` from <@${ctx.requestedBy}>'s request` : ''}.`);
+    `<#${privateChannel.id}>${ctx.requestedBy ? ` from <@${ctx.requestedBy}>'s request` : ''}.` +
+    (prios.length ? ` Prio: ${prios.map((p) => `<@${p.id}> (${p.role})`).join(', ')}.` : ''));
 }
 
 async function handleSetTimezone(interaction) {
@@ -1956,7 +2073,7 @@ async function handleHelp(interaction) {
     if (interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
       sections.push([
         '**Server admin tools**',
-        ...bullets(['access', 'permissionlist', 'startprompt', 'fixrun', 'setlogchannel', 'requestmin', 'signupdmserver']),
+        ...bullets(['access', 'permissionlist', 'startprompt', 'fixrun', 'setlogchannel', 'requestmin', 'signupdmserver', 'priorole']),
       ]);
     }
 
@@ -2441,6 +2558,26 @@ async function handleRequestDenySubmit(interaction) {
 }
 
 /** /approver: admins and anyone who can use /createrun (e.g. overseers) hand out or take away the approve/deny ability. */
+/** /priorole: an admin edits which roles can be given a prio slot when creating a run. */
+async function handlePrioRole(interaction) {
+  if (!(await requireAdmin(interaction, 'priorole'))) return undefined;
+
+  const guildId = interaction.guildId;
+  const action = interaction.options.getString('action', true);
+  const role = interaction.options.getRole('role');
+  if (action !== 'list' && !role) return interaction.reply(ephemeral('Pick the **role** to add or remove.'));
+
+  if (action === 'add') addPrioRole(guildId, role.id);
+  else if (action === 'remove') removePrioRole(guildId, role.id);
+
+  const roles = getPrioRoles(guildId);
+  const current = roles.length
+    ? `Prio slots can go to members with: ${roles.map((id) => `<@&${id}>`).join(', ')}.`
+    : 'No roles are set, so a prio slot can go to **any member** of the server.';
+  const lead = action === 'add' ? `✅ Added <@&${role.id}>.\n` : action === 'remove' ? `➖ Removed <@&${role.id}>.\n` : '';
+  return interaction.reply({ content: lead + current, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+}
+
 /** /signupdm: a person turns their own roster DM on or off. */
 async function handleSignupDm(interaction) {
   const on = interaction.options.getString('setting', true) === 'on';
@@ -4009,6 +4146,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
         case 'request': return await handleRequest(interaction);
         case 'requestmin': return await handleRequestMin(interaction);
         case 'signupdm': return await handleSignupDm(interaction);
+        case 'priorole': return await handlePrioRole(interaction);
         case 'signupdmserver': return await handleSignupDmServer(interaction);
         case 'approver': return await handleApprover(interaction);
         case 'botupdate': return await handleBotUpdate(interaction);

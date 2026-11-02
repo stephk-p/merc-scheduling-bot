@@ -83,6 +83,11 @@ export const REQUEST_APPROVED_CHANNEL = {
   [UMAD_GUILD_ID]: '1554406747504910356',
 };
 
+/** Roles that can be given a prio slot (a guaranteed slot without being a clearee). Editable with /priorole. */
+export const PRIO_ROLES = {
+  [UMAD_GUILD_ID]: [MERCS_ROLE_ID],
+};
+
 /** Commands that are limited by `commandRoles`. */
 export const RESTRICTED_COMMANDS = [
   'createrun', 'createrun-test', 'privaterun', 'adoptrun', 'managerun', 'runs', 'removeadoptedrun',

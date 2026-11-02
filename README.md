@@ -66,6 +66,12 @@ That roster is the only message the bot posts in the channel. Nobody is @mention
   then reads like `5m M4S clear for Steph (NIN/SAM) - M1 & Alex (WHM) - H1 @ Sunday, September 28, 2026 4:00 PM`.
   Any extra clearee matching a server member who can see the channel the run is posted in is `@mentioned`
   (and pinged) instead of named; either way, a matching member is added to the private channel.
+- **prio** (optional) is a number (1-5) of mercs to give a guaranteed slot. It works like `extra_clearees`
+  (a small form per person, opened one at a time), except these people are **not clearees**: they just
+  hold a normal merc slot from the start, ahead of anyone who signs up later, and can leave like any
+  other sign-up. Each one must be picked from the server's member list. In servers with a prio role list
+  (UMAD: the Merc role), only members with one of those roles can be picked. Admins edit that list with
+  `/priorole`.
 - The first time you use `/createrun`, fill in the optional **timezone** option (for example
   `America/New_York` or `EST`) so the bot knows what "4 PM" means for you. It remembers it after that.
   You can change it any time with `/settimezone`.
